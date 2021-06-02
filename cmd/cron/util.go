@@ -1,11 +1,28 @@
 package main
 
 import (
+	"os"
+
 	"github.com/cloudflare/cloudflare-go"
 	"github.com/ipfs/go-cid"
+	logging "github.com/ipfs/go-log/v2"
+	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
 )
+
+const (
+	bufPresize = 128 << 20 // size to the approximate amount of NFTs we track
+)
+
+var (
+	log          = logging.Logger("dagcargo-cron")
+	ShowProgress = isatty.IsTerminal(os.Stderr.Fd())
+)
+
+func init() {
+	logging.SetLogLevel("*", "INFO")
+}
 
 func cidv1(c cid.Cid) cid.Cid {
 	if c.Version() == 1 {

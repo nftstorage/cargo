@@ -20,9 +20,11 @@ import (
 var nftKeyparse = regexp.MustCompile(`^\s*(.+):([^:\s]+)\s*$`)
 
 var getNewNftCids = &cli.Command{
-	Usage: "Pul new CIDs from nft.storage",
-	Name:  "get-new-cids",
+	Usage: "Pull new CIDs from nft.storage",
+	Name:  "get-new-nfts",
 	Action: func(cctx *cli.Context) error {
+
+		log.Info("starting new nft poll")
 
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
@@ -68,11 +70,14 @@ var getNewNftCids = &cli.Command{
 			alreadyKnown[orig+src] = struct{}{}
 		}
 
+		log.Infof("retrieved %d already known cid+source pairs", len(alreadyKnown))
+
 		var lastPct, seen, new int64
 		projected := int64(len(alreadyKnown))
 
-		if isTty {
-			defer fmt.Fprintf(os.Stderr, "100%%\n%d total, %d new CIDs\n", seen, new)
+		defer func() { log.Infof("finished: %d total, %d new CIDs", seen, new) }()
+		if ShowProgress {
+			defer fmt.Fprint(os.Stderr, "100%\n")
 		}
 
 	listDone:
@@ -88,7 +93,7 @@ var getNewNftCids = &cli.Command{
 
 			seen++
 
-			if isTty && projected > 0 && 100*seen/projected != lastPct {
+			if ShowProgress && projected > 0 && 100*seen/projected != lastPct {
 				lastPct = 100 * seen / projected
 				fmt.Fprintf(os.Stderr, "%d%%\r", lastPct)
 			}
@@ -143,9 +148,9 @@ var getNewNftCids = &cli.Command{
 			_, err = db.Exec(
 				ctx,
 				`
-					INSERT INTO cargo.dags ( cid_v1, size_claimed, entry_created ) VALUES ( $1, $2, COALESCE( $3, NOW() ) )
-						ON CONFLICT DO NOTHING
-					`,
+				INSERT INTO cargo.dags ( cid_v1, size_claimed, entry_created ) VALUES ( $1, $2, COALESCE( $3, NOW() ) )
+					ON CONFLICT DO NOTHING
+				`,
 				cidNormStr,
 				sizeClaimed,
 				entryCreated,
@@ -157,9 +162,9 @@ var getNewNftCids = &cli.Command{
 			_, err = db.Exec(
 				ctx,
 				`
-					INSERT INTO cargo.sources ( cid_v1, cid_original, source, entry_created ) VALUES ( $1, $2, $3, COALESCE( $4, NOW() ) )
-						ON CONFLICT DO NOTHING
-					`,
+				INSERT INTO cargo.sources ( cid_v1, cid_original, source, entry_created ) VALUES ( $1, $2, $3, COALESCE( $4, NOW() ) )
+					ON CONFLICT DO NOTHING
+				`,
 				cidNormStr,
 				cidOriginal.String(),
 				source,
@@ -177,12 +182,12 @@ func listAllNftKeys(ctx context.Context, api *cloudflare.API, nftKvId string, re
 	defer close(resCh)
 	defer close(errCh)
 
-	var nextPage string
+	var nextPageCursor string
 
 	for {
 		opts := cloudflare.ListWorkersKVsOptions{}
-		if nextPage != "" {
-			opts.Cursor = &nextPage
+		if nextPageCursor != "" {
+			opts.Cursor = &nextPageCursor
 		}
 
 		resp, err := api.ListWorkersKVsWithOptions(ctx, nftKvId, opts)
@@ -216,6 +221,6 @@ func listAllNftKeys(ctx context.Context, api *cloudflare.API, nftKvId string, re
 		if resp.Cursor == "" {
 			break
 		}
-		nextPage = resp.Cursor
+		nextPageCursor = resp.Cursor
 	}
 }

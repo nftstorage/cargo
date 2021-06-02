@@ -5,27 +5,21 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v2"
 	"github.com/urfave/cli/v2/altsrc"
 
-	logging "github.com/ipfs/go-log/v2"
 	"golang.org/x/sys/unix"
 )
 
-const bufPresize = 128 << 20 // size to the approximate amount of NFTs we track
-
-var log = logging.Logger("dagcargo-cron")
-
-var isTty = isatty.IsTerminal(os.Stderr.Fd())
-
 func main() {
 
-	logging.SetLogLevel("*", "INFO")
-
-	cfgFileReader := func(context *cli.Context) (altsrc.InputSourceContext, error) {
-		return altsrc.NewTomlSourceFromFile("dagcargo.toml")
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, unix.SIGINT, unix.SIGTERM)
+		<-sigs
+		cancel()
+	}()
 
 	flags := []cli.Flag{
 		&cli.StringFlag{
@@ -54,25 +48,19 @@ func main() {
 		}),
 	}
 
-	app := &cli.App{
-		Name:   "cargo-cron",
-		Usage:  "Misc background processes for dagcargo",
-		Before: altsrc.InitInputSourceWithContext(flags, cfgFileReader),
-		Flags:  flags,
+	if err := (&cli.App{
+		Name:  "cargo-cron",
+		Usage: "Misc background processes for dagcargo",
+		Before: altsrc.InitInputSourceWithContext(
+			flags,
+			func(context *cli.Context) (altsrc.InputSourceContext, error) {
+				return altsrc.NewTomlSourceFromFile("dagcargo.toml")
+			}),
+		Flags: flags,
 		Commands: []*cli.Command{
 			getNewNftCids,
 		},
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		defer cancel()
-		sigs := make(chan os.Signal, 1)
-		signal.Notify(sigs, unix.SIGINT, unix.SIGTERM)
-		<-sigs
-	}()
-
-	if err := app.RunContext(ctx, os.Args); err != nil {
+	}).RunContext(ctx, os.Args); err != nil {
 		log.Error(err)
 		os.Exit(1)
 		return
