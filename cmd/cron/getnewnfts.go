@@ -12,6 +12,7 @@ import (
 	"github.com/cloudflare/cloudflare-go"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ipfs/go-cid"
+	fslock "github.com/ipfs/go-fs-lock"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
@@ -19,10 +20,18 @@ import (
 
 var nftKeyparse = regexp.MustCompile(`^\s*(.+):([^:\s]+)\s*$`)
 
+const getNftCidsName = "get-new-nfts"
+
 var getNewNftCids = &cli.Command{
 	Usage: "Pull new CIDs from nft.storage",
-	Name:  "get-new-nfts",
+	Name:  getNftCidsName,
 	Action: func(cctx *cli.Context) error {
+
+		lkCLose, err := fslock.Lock(os.TempDir(), getNftCidsName)
+		if err != nil {
+			return err
+		}
+		defer lkCLose.Close()
 
 		log.Info("starting new nft poll")
 
@@ -53,11 +62,11 @@ var getNewNftCids = &cli.Command{
 		resCh := make(chan cloudflare.StorageKey, bufPresize)
 		go listAllNftKeys(ctx, api, nftKvId, resCh, errCh)
 
-		alreadyKnown := make(map[string]struct{}, bufPresize)
+		initiallyInDb := make(map[[2]string]struct{}, bufPresize)
 
 		rows, err := db.Query(
 			ctx,
-			`SELECT cid_original, source FROM cargo.sources`,
+			`SELECT cid_original, source FROM cargo.sources WHERE entry_removed IS NULL`,
 		)
 		if err != nil {
 			return err
@@ -67,15 +76,15 @@ var getNewNftCids = &cli.Command{
 			if err = rows.Scan(&orig, &src); err != nil {
 				return err
 			}
-			alreadyKnown[orig+src] = struct{}{}
+			initiallyInDb[[2]string{orig, src}] = struct{}{}
 		}
 
-		log.Infof("retrieved %d already known cid+source pairs", len(alreadyKnown))
+		log.Infof("starting with %d already known cid+source pairs", len(initiallyInDb))
 
-		var lastPct, seen, new int64
-		projected := int64(len(alreadyKnown))
+		var lastPct, seen, new, removed int
+		projected := len(initiallyInDb)
 
-		defer func() { log.Infof("finished: %d total, %d new CIDs", seen, new) }()
+		defer func() { log.Infof("finished: %d total, %d new, %d removed CIDs", seen, new, removed) }()
 		if ShowProgress {
 			defer fmt.Fprint(os.Stderr, "100%\n")
 		}
@@ -109,7 +118,8 @@ var getNewNftCids = &cli.Command{
 				return xerrors.Errorf("failed parsing user cid '%s': %w", keyParts[2], err)
 			}
 
-			if _, found := alreadyKnown[cidOriginal.String()+source]; found {
+			if _, found := initiallyInDb[[2]string{cidOriginal.String(), source}]; found {
+				delete(initiallyInDb, [2]string{cidOriginal.String(), source})
 				continue
 			}
 
@@ -163,7 +173,7 @@ var getNewNftCids = &cli.Command{
 				ctx,
 				`
 				INSERT INTO cargo.sources ( cid_v1, cid_original, source, entry_created ) VALUES ( $1, $2, $3, COALESCE( $4, NOW() ) )
-					ON CONFLICT DO NOTHING
+					ON CONFLICT ON CONSTRAINT singleton_source_record DO UPDATE SET entry_removed = NULL
 				`,
 				cidNormStr,
 				cidOriginal.String(),
@@ -174,7 +184,27 @@ var getNewNftCids = &cli.Command{
 				return err
 			}
 		}
-		return <-errCh
+
+		if err := <-errCh; err != nil {
+			return err
+		}
+
+		removed = len(initiallyInDb)
+		if removed > 0 {
+			for k := range initiallyInDb {
+				if _, err = db.Exec(
+					ctx,
+					`
+					UPDATE cargo.sources SET entry_removed = NOW() WHERE cid_original = $1 AND source = $2
+					`,
+					k[0], k[1],
+				); err != nil {
+					return err
+				}
+			}
+		}
+
+		return nil
 	},
 }
 

@@ -66,17 +66,13 @@ CREATE TABLE IF NOT EXISTS cargo.refs (
   ref_v1 TEXT NOT NULL CONSTRAINT valid_cidv1 CHECK ( cargo.valid_cid_v1(ref_v1) ),
   CONSTRAINT singleton_refs_record UNIQUE ( cid_v1, ref_v1 )
 );
-CREATE TRIGGER trigger_dag_update_on_related_refs
-  AFTER INSERT OR UPDATE OR DELETE ON cargo.refs
-  FOR EACH ROW
-  EXECUTE PROCEDURE cargo.update_parent_dag_timestamp()
-;
 
 CREATE TABLE IF NOT EXISTS cargo.sources (
   cid_v1 TEXT NOT NULL REFERENCES cargo.dags ( cid_v1 ),
   cid_original TEXT NOT NULL,
   source TEXT NOT NULL,
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  entry_removed TIMESTAMP WITH TIME ZONE,
   CONSTRAINT singleton_source_record UNIQUE ( source, cid_original )
 );
 CREATE INDEX IF NOT EXISTS sources_cidv1_idx ON cargo.sources ( cid_v1 );
@@ -90,12 +86,14 @@ CREATE TABLE IF NOT EXISTS cargo.batches (
   batch_cid TEXT NOT NULL UNIQUE CONSTRAINT valid_batch_cid CHECK ( cargo.valid_cid_v1(batch_cid) ),
   piece_cid TEXT UNIQUE,
   car_size BIGINT CONSTRAINT valid_car_size CHECK ( car_size >= 0 ),
+  metadata JSONB,
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS cargo.batch_entries (
   batch_cid TEXT NOT NULL REFERENCES cargo.batches ( batch_cid ),
   cid_v1 TEXT NOT NULL REFERENCES cargo.dags ( cid_v1 ),
+  datamodel_selector TEXT,
   CONSTRAINT singleton_batch_entry UNIQUE ( cid_v1, batch_cid )
 );
 CREATE INDEX IF NOT EXISTS batch_entries_cid_v1 ON cargo.batch_entries ( cid_v1 );

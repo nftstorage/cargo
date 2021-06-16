@@ -6,6 +6,7 @@ require (
 	github.com/cloudflare/cloudflare-go v0.17.0
 	github.com/davecgh/go-spew v1.1.1
 	github.com/ipfs/go-cid v0.0.7
+	github.com/ipfs/go-fs-lock v0.0.6
 	github.com/ipfs/go-ipfs-api v0.2.0
 	github.com/ipfs/go-ipld-format v0.0.2
 	github.com/ipfs/go-log/v2 v2.1.3
