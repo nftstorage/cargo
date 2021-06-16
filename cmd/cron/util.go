@@ -2,9 +2,11 @@ package main
 
 import (
 	"os"
+	"time"
 
 	"github.com/cloudflare/cloudflare-go"
 	"github.com/ipfs/go-cid"
+	ipfsapi "github.com/ipfs/go-ipfs-api"
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v2"
@@ -29,6 +31,12 @@ func cidv1(c cid.Cid) cid.Cid {
 		return c
 	}
 	return cid.NewCidV1(c.Type(), c.Hash())
+}
+
+func ipfsApi(cctx *cli.Context) *ipfsapi.Shell {
+	s := ipfsapi.NewShell(cctx.String("ipfs-api"))
+	s.SetTimeout(time.Second * time.Duration(cctx.Uint("ipfs-api-timeout")))
+	return s
 }
 
 func cfApi(cctx *cli.Context) (*cloudflare.API, error) {

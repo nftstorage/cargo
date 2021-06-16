@@ -24,7 +24,17 @@ func main() {
 	flags := []cli.Flag{
 		&cli.StringFlag{
 			Name:  "ipfs-api",
-			Value: "http://localhost:5001/",
+			Value: "http://localhost:5001",
+		},
+		&cli.UintFlag{
+			Name:  "ipfs-api-timeout",
+			Usage: "HTTP API timeout in seconds",
+			Value: 300,
+		},
+		&cli.UintFlag{
+			Name:  "ipfs-api-max-workers",
+			Usage: "Amount of concurrent IPFS API operations",
+			Value: 64,
 		},
 		&cli.StringFlag{
 			Name:  "pg-connstring",
@@ -59,6 +69,7 @@ func main() {
 		Flags: flags,
 		Commands: []*cli.Command{
 			getNewNftCids,
+			pinDags,
 		},
 	}).RunContext(ctx, os.Args); err != nil {
 		log.Error(err)
