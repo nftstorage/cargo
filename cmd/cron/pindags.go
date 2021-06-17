@@ -57,11 +57,7 @@ var pinDags = &cli.Command{
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
 
-		dbConnCfg, err := pgxpool.ParseConfig(cctx.String("pg-connstring"))
-		if err != nil {
-			return err
-		}
-		db, err := pgxpool.ConnectConfig(ctx, dbConnCfg)
+		db, err := connectDb(cctx)
 		if err != nil {
 			return err
 		}

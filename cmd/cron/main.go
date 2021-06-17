@@ -70,6 +70,7 @@ func main() {
 		Commands: []*cli.Command{
 			getNewNftCids,
 			pinDags,
+			aggregateDags,
 		},
 	}).RunContext(ctx, os.Args); err != nil {
 		log.Error(err)

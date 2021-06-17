@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS cargo.dags (
   entry_last_exported TIMESTAMP WITH TIME ZONE
 );
 CREATE INDEX IF NOT EXISTS dags_last_idx ON cargo.dags ( entry_last_updated, entry_last_exported );
+CREATE INDEX IF NOT EXISTS dags_size_actual ON cargo.dags ( size_actual );
 CREATE TRIGGER trigger_dag_insert
   BEFORE INSERT ON cargo.dags
   FOR EACH ROW
@@ -96,7 +97,7 @@ CREATE TABLE IF NOT EXISTS cargo.batch_entries (
   datamodel_selector TEXT,
   CONSTRAINT singleton_batch_entry UNIQUE ( cid_v1, batch_cid )
 );
-CREATE INDEX IF NOT EXISTS batch_entries_cid_v1 ON cargo.batch_entries ( cid_v1 );
+CREATE INDEX IF NOT EXISTS batch_entries_batch_cid ON cargo.batch_entries ( batch_cid );
 CREATE TRIGGER trigger_dag_update_on_related_batch_entries
   AFTER INSERT OR UPDATE OR DELETE ON cargo.batch_entries
   FOR EACH ROW

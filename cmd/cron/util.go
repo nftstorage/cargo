@@ -8,6 +8,7 @@ import (
 	"github.com/ipfs/go-cid"
 	ipfsapi "github.com/ipfs/go-ipfs-api"
 	logging "github.com/ipfs/go-log/v2"
+	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
@@ -31,6 +32,14 @@ func cidv1(c cid.Cid) cid.Cid {
 		return c
 	}
 	return cid.NewCidV1(c.Type(), c.Hash())
+}
+
+func connectDb(cctx *cli.Context) (*pgxpool.Pool, error) {
+	dbConnCfg, err := pgxpool.ParseConfig(cctx.String("pg-connstring"))
+	if err != nil {
+		return nil, err
+	}
+	return pgxpool.ConnectConfig(cctx.Context, dbConnCfg)
 }
 
 func ipfsApi(cctx *cli.Context) *ipfsapi.Shell {
