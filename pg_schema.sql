@@ -113,9 +113,9 @@ CREATE TABLE IF NOT EXISTS cargo.deals (
   batch_cid TEXT NOT NULL REFERENCES cargo.batches ( batch_cid ),
   provider TEXT NOT NULL REFERENCES cargo.providers ( provider ),
   status TEXT NOT NULL,
+  deal_id INTEGER UNIQUE,
   epoch_start INTEGER,
   epoch_end INTEGER,
-  deal_id INTEGER,
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
   entry_last_updated TIMESTAMP WITH TIME ZONE NOT NULL
 );

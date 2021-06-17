@@ -6,6 +6,7 @@ require (
 	github.com/cloudflare/cloudflare-go v0.17.0
 	github.com/davecgh/go-spew v1.1.1
 	github.com/filecoin-project/go-dagaggregator-unixfs v0.0.0-20210617121155-8769af8717e9
+	github.com/filecoin-project/lotus v1.10.0-rc5
 	github.com/ipfs/go-blockservice v0.1.4
 	github.com/ipfs/go-cid v0.0.7
 	github.com/ipfs/go-datastore v0.4.5

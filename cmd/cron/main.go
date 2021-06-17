@@ -71,6 +71,7 @@ func main() {
 			getNewNftCids,
 			pinDags,
 			aggregateDags,
+			trackDeals,
 		},
 	}).RunContext(ctx, os.Args); err != nil {
 		log.Error(err)
