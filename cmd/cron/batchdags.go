@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
 	"sync"
 
 	"github.com/filecoin-project/go-dagaggregator-unixfs"
@@ -10,7 +9,6 @@ import (
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-datastore"
 	datastoresync "github.com/ipfs/go-datastore/sync"
-	fslock "github.com/ipfs/go-fs-lock"
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	exchangeoffline "github.com/ipfs/go-ipfs-exchange-offline"
 	"github.com/ipfs/go-merkledag"
@@ -18,21 +16,11 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-const aggregateDagsName = "aggregate-dags"
-
 var aggregateDags = &cli.Command{
 	Usage: "Aggregate available dags if any",
-	Name:  aggregateDagsName,
+	Name:  "aggregate-dags",
 	Flags: []cli.Flag{},
 	Action: func(cctx *cli.Context) error {
-
-		lkCLose, err := fslock.Lock(os.TempDir(), aggregateDagsName)
-		if err != nil {
-			return err
-		}
-		defer lkCLose.Close()
-
-		log.Info("begin car aggregation round")
 
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()

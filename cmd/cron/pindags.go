@@ -9,12 +9,13 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ipfs/go-cid"
-	fslock "github.com/ipfs/go-fs-lock"
 	ipfsapi "github.com/ipfs/go-ipfs-api"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/multiformats/go-multicodec"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
 )
@@ -32,11 +33,9 @@ type stats struct {
 	size   *uint64
 }
 
-const pinDagsName = "pin-dags"
-
 var pinDags = &cli.Command{
 	Usage: "Pin and analyze DAGs locally",
-	Name:  pinDagsName,
+	Name:  "pin-dags",
 	Flags: []cli.Flag{
 		&cli.UintFlag{
 			Name:  "skip-dags-aged",
@@ -45,14 +44,6 @@ var pinDags = &cli.Command{
 		},
 	},
 	Action: func(cctx *cli.Context) error {
-
-		lkCLose, err := fslock.Lock(os.TempDir(), pinDagsName)
-		if err != nil {
-			return err
-		}
-		defer lkCLose.Close()
-
-		log.Info("begin pinning round")
 
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
@@ -98,7 +89,7 @@ var pinDags = &cli.Command{
 		}
 
 		defer func() {
-			log.Infow("finished",
+			log.Infow("summary",
 				"pinned", atomic.LoadUint64(total.pinned),
 				"failed", atomic.LoadUint64(total.failed),
 				"referencedBlocks", atomic.LoadUint64(total.refs),
@@ -144,7 +135,6 @@ var pinDags = &cli.Command{
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				api := ipfsApi(cctx)
 
 				for {
 					c, chanOpen := <-toPinCh
@@ -152,7 +142,7 @@ var pinDags = &cli.Command{
 						return
 					}
 
-					if err := pinAndAnalyze(ctx, api, db, c, total); err != nil {
+					if err := pinAndAnalyze(cctx, db, c, total); err != nil {
 						errCh <- err
 						return
 					}
@@ -179,8 +169,12 @@ type refEntry struct {
 	Err string
 }
 
-func pinAndAnalyze(ctx context.Context, api *ipfsapi.Shell, db *pgxpool.Pool, rootCid cid.Cid, total stats) (err error) {
+func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total stats) (err error) {
+	ctx := cctx.Context
 
+	api := ipfsApi(cctx)
+
+	// open a tx only when/if we need one, do not hold up pg connections
 	var tx pgx.Tx
 
 	defer func() {
@@ -194,7 +188,7 @@ func pinAndAnalyze(ctx context.Context, api *ipfsapi.Shell, db *pgxpool.Pool, ro
 
 			// Timeouts are non-fatal
 			if ue, castOk := err.(*url.Error); castOk && ue.Timeout() {
-				log.Warnf("Aborting '%s' of '%s' due to timeout: %s", ue.Op, ue.URL, ue.Unwrap().Error())
+				log.Warnf("aborting '%s' of '%s' due to timeout: %s", ue.Op, ue.URL, ue.Unwrap().Error())
 				err = nil
 			}
 		} else if tx != nil {
@@ -204,7 +198,26 @@ func pinAndAnalyze(ctx context.Context, api *ipfsapi.Shell, db *pgxpool.Pool, ro
 
 	err = api.Request("pin/add").Arguments(rootCid.String()).Exec(ctx, nil)
 	if err != nil {
-		return err
+
+		ue, castOk := err.(*url.Error)
+		if castOk &&
+			ue.Timeout() &&
+			rootCid.Prefix().Codec == uint64(multicodec.DagPb) &&
+			rootCid.Prefix().MhType == uint64(multicodec.Sha2_256) &&
+			rootCid.Prefix().MhLength == 32 {
+
+			// we timed out, AND we can convert to Cidv0: try that way ( it just might work! )
+			v0 := cid.NewCidV0(rootCid.Hash())
+			log.Warnf("aborted pin of %s due to timeout, retrying pin with %s", rootCid.String(), v0.String())
+
+			eagerApi := ipfsApi(cctx)
+			eagerApi.SetTimeout(1 * time.Minute)
+			err = eagerApi.Request("pin/add").Arguments(v0.String()).Exec(ctx, nil)
+		}
+
+		if err != nil {
+			return err
+		}
 	}
 
 	ds := new(dagStat)
@@ -265,20 +278,13 @@ func pinAndAnalyze(ctx context.Context, api *ipfsapi.Shell, db *pgxpool.Pool, ro
 		atomic.AddUint64(total.refs, uint64(len(refs)))
 	}
 
+	updSql := `UPDATE cargo.dags SET size_actual = $1 WHERE cid_v1 = $2`
+	updArgs := []interface{}{ds.Size, cidv1(rootCid).String()}
+
 	if tx != nil {
-		_, err = tx.Exec(
-			ctx,
-			`UPDATE cargo.dags SET size_actual = $1 WHERE cid_v1 = $2`,
-			ds.Size,
-			cidv1(rootCid).String(),
-		)
+		_, err = tx.Exec(ctx, updSql, updArgs...)
 	} else {
-		_, err = db.Exec(
-			ctx,
-			`UPDATE cargo.dags SET size_actual = $1 WHERE cid_v1 = $2`,
-			ds.Size,
-			cidv1(rootCid).String(),
-		)
+		_, err = db.Exec(ctx, updSql, updArgs...)
 	}
 	if err != nil {
 		return err

@@ -12,7 +12,6 @@ import (
 	"github.com/cloudflare/cloudflare-go"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ipfs/go-cid"
-	fslock "github.com/ipfs/go-fs-lock"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
@@ -20,20 +19,10 @@ import (
 
 var nftKeyparse = regexp.MustCompile(`^\s*(.+):([^:\s]+)\s*$`)
 
-const getNftCidsName = "get-new-nfts"
-
 var getNewNftCids = &cli.Command{
 	Usage: "Pull new CIDs from nft.storage",
-	Name:  getNftCidsName,
+	Name:  "get-new-nfts",
 	Action: func(cctx *cli.Context) error {
-
-		lkCLose, err := fslock.Lock(os.TempDir(), getNftCidsName)
-		if err != nil {
-			return err
-		}
-		defer lkCLose.Close()
-
-		log.Info("starting new nft poll")
 
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
@@ -79,15 +68,20 @@ var getNewNftCids = &cli.Command{
 			initiallyInDb[[2]string{orig, src}] = struct{}{}
 		}
 
-		log.Infof("starting with %d already known cid+source pairs", len(initiallyInDb))
+		log.Infof("loaded %d already known cid+source pairs", len(initiallyInDb))
 
 		var lastPct, seen, new, removed int
 		projected := len(initiallyInDb)
+		initially := projected
 
-		defer func() { log.Infof("finished: %d total, %d new, %d removed CIDs", seen, new, removed) }()
-		if ShowProgress {
-			defer fmt.Fprint(os.Stderr, "100%\n")
-		}
+		defer func() {
+			log.Infow("summary",
+				"total", seen,
+				"initial", initially,
+				"new", new,
+				"removed", removed,
+			)
+		}()
 
 	listDone:
 		for {

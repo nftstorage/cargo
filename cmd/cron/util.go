@@ -34,6 +34,8 @@ func cidv1(c cid.Cid) cid.Cid {
 	return cid.NewCidV1(c.Type(), c.Hash())
 }
 
+func mainnetTime(filEpoch int64) time.Time { return time.Unix(filEpoch*30+1598306400, 0) }
+
 func connectDb(cctx *cli.Context) (*pgxpool.Pool, error) {
 	dbConnCfg, err := pgxpool.ParseConfig(cctx.String("pg-connstring"))
 	if err != nil {

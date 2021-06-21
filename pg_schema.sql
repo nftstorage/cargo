@@ -119,15 +119,15 @@ CREATE TABLE IF NOT EXISTS cargo.deals (
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
   entry_last_updated TIMESTAMP WITH TIME ZONE NOT NULL
 );
-CREATE TRIGGER trigger_dag_update_on_related_deals
-  AFTER INSERT OR UPDATE OR DELETE ON cargo.deals
-  FOR EACH ROW
-  EXECUTE PROCEDURE cargo.update_batch_dags_timestamps()
-;
 CREATE TRIGGER trigger_deal_insert
   BEFORE INSERT ON cargo.deals
   FOR EACH ROW
   EXECUTE PROCEDURE cargo.update_entry_timestamp()
+;
+CREATE TRIGGER trigger_dag_update_on_related_deal_insert_delete
+  AFTER INSERT OR DELETE ON cargo.deals
+  FOR EACH ROW
+  EXECUTE PROCEDURE cargo.update_batch_dags_timestamps()
 ;
 CREATE TRIGGER trigger_deal_updated
   BEFORE UPDATE OF status, epoch_start, epoch_end, deal_id, entry_created ON cargo.deals
@@ -135,3 +135,32 @@ CREATE TRIGGER trigger_deal_updated
   WHEN (OLD IS DISTINCT FROM NEW)
   EXECUTE PROCEDURE cargo.update_entry_timestamp()
 ;
+CREATE TRIGGER trigger_dag_update_on_related_deal_change
+  AFTER UPDATE OF entry_last_updated ON cargo.deals
+  FOR EACH ROW
+  WHEN (OLD.entry_last_updated != NEW.entry_last_updated)
+  EXECUTE PROCEDURE cargo.update_batch_dags_timestamps()
+;
+
+CREATE OR REPLACE VIEW cargo.dags_missing_overview AS (
+  WITH latest_pin_run AS (
+    SELECT MAX(entry_last_updated) AS ts FROM cargo.dags WHERE size_actual IS NOT NULL
+  )
+  SELECT
+      s.source,
+      ( SELECT COUNT(*) AS count_total FROM cargo.sources stot WHERE stot.source = s.source ),
+      COUNT(*) AS count_missing,
+      ( 100 * COUNT(*)::NUMERIC / ( SELECT COUNT(*)::NUMERIC AS count_total FROM cargo.sources stot WHERE stot.source = s.source ) )::NUMERIC(5,2) AS pct_missing,
+      MIN( d.entry_created ) AS oldest,
+      MAX( d.entry_created) AS newest
+    FROM cargo.sources s
+    JOIN cargo.dags d USING (cid_v1)
+  WHERE
+    d.size_actual IS NULL
+      AND
+    s.entry_removed IS NULL
+      AND
+    d.entry_created < ( SELECT ts - '30 minutes'::INTERVAL FROM latest_pin_run )
+  GROUP BY s.source
+  ORDER BY count_missing DESC
+);

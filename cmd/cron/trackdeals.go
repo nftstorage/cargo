@@ -7,7 +7,6 @@ import (
 
 	"github.com/filecoin-project/lotus/chain/actors/builtin/market"
 	"github.com/ipfs/go-cid"
-	fslock "github.com/ipfs/go-fs-lock"
 	"github.com/urfave/cli/v2"
 )
 
@@ -16,38 +15,15 @@ type dealList map[uint64]struct {
 	State    market.DealState
 }
 
-const trackDealsName = "track-deals"
-
+var pieceCount, dealCount int
 var trackDeals = &cli.Command{
 	Usage: "Track state of filecoin deals related to known PieceCIDs",
-	Name:  trackDealsName,
+	Name:  "track-deals",
 	Flags: []cli.Flag{},
 	Action: func(cctx *cli.Context) error {
 
-		lkCLose, err := fslock.Lock(os.TempDir(), trackDealsName)
-		if err != nil {
-			return err
-		}
-		defer lkCLose.Close()
-
-		log.Info("begin deal update round")
-
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
-
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-
-		inputFh, err := os.Open(home + "/deals.json")
-		if err != nil {
-			return err
-		}
-		var deals dealList
-		if err = json.NewDecoder(inputFh).Decode(&deals); err != nil {
-			return err
-		}
 
 		db, err := connectDb(cctx)
 		if err != nil {
@@ -79,11 +55,35 @@ var trackDeals = &cli.Command{
 			knownPieceCIDs[pCid] = bCid
 		}
 
+		pieceCount = len(knownPieceCIDs)
+		defer func() {
+			log.Infow("summary", "knownPieces", pieceCount, "totalDeals", dealCount)
+		}()
+
+		if pieceCount == 0 {
+			return nil
+		}
+
+		log.Infof("checking the status of %d known Piece CIDs", pieceCount)
+
+		// FIXME
+		// curl -s http://127.0.0.1:1234/rpc/v0 -X POST -H "Content-Type: application/json" --data '{ "jsonrpc": "2.0", "id":1, "method": "Filecoin.StateMarketDeals", "params": [ null ] }' | less
+		inputFh, err := os.Open("deals.json")
+		if err != nil {
+			return err
+		}
+		var deals dealList
+		if err = json.NewDecoder(inputFh).Decode(&deals); err != nil {
+			return err
+		}
+
 		for dealId, d := range deals {
 			batchCid, known := knownPieceCIDs[d.Proposal.PieceCID]
 			if !known {
 				continue
 			}
+
+			dealCount++
 
 			_, err = db.Exec(
 				ctx,
@@ -97,20 +97,20 @@ var trackDeals = &cli.Command{
 				return err
 			}
 
-			epochStart := new(uint64)
-			epochEnd := new(uint64)
+			epochStart := new(int64)
+			epochEnd := new(int64)
 
 			if d.Proposal.StartEpoch > 0 {
-				*epochStart = uint64(d.Proposal.StartEpoch)
+				*epochStart = int64(d.Proposal.StartEpoch)
 			}
 			if d.Proposal.EndEpoch > 0 {
-				*epochEnd = uint64(d.Proposal.EndEpoch)
+				*epochEnd = int64(d.Proposal.EndEpoch)
 			}
 
-			status := "accepted"
+			status := "published"
 			if d.State.SectorStartEpoch > 0 {
 				status = "active"
-				*epochStart = uint64(d.State.SectorStartEpoch)
+				*epochStart = int64(d.State.SectorStartEpoch)
 			}
 
 			_, err = db.Exec(
