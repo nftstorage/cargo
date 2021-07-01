@@ -43,7 +43,8 @@ type statusUpdate struct {
 		Active     uint64 `json:"active"`
 		Terminated uint64 `json:"terminated"`
 	}
-	value []*statusDealEntry
+	value        []*statusDealEntry
+	valueEncoded string
 }
 
 var lastPct, countPending, countUpdated int
@@ -113,6 +114,7 @@ var exportStatus = &cli.Command{
 				WHERE %s
 				ORDER BY s.cid_original -- order is critical to form bulk-update batches
 				`,
+
 				toUpdateCond,
 			),
 		)
@@ -120,6 +122,7 @@ var exportStatus = &cli.Command{
 			return err
 		}
 
+		approxBytes := 0
 		updates := make(map[string]*statusUpdate, 10000)
 
 		for rows.Next() {
@@ -152,12 +155,23 @@ var exportStatus = &cli.Command{
 
 			if _, exists := updates[u.key]; !exists {
 
+				// we are changing the key: encode everything accumulated
+				buf := new(bytes.Buffer)
+				if err := json.NewEncoder(buf).Encode(u.value); err != nil {
+					return err
+				}
+				u.valueEncoded = buf.String()
+
+				approxBytes += len(u.valueEncoded)
+
 				// see if we grew too big and need to flush
-				if len(updates) > 9999 {
+				// 10k entries / 100MiB size
+				if len(updates) > 9999 || approxBytes > 95<<20 {
 					if err = uploadAndMarkUpdates(cctx, db, updates); err != nil {
 						return err
 					}
 					// reset
+					approxBytes = 0
 					updates = make(map[string]*statusUpdate, 10000)
 				}
 
@@ -202,37 +216,40 @@ func uploadAndMarkUpdates(cctx *cli.Context, db *pgxpool.Pool, updates map[strin
 	updatedCids := make([]string, 0, len(updates))
 	for _, u := range updates {
 
-		buf := new(bytes.Buffer)
-		if err := json.NewEncoder(buf).Encode(u.value); err != nil {
-			return err
+		if u.valueEncoded == "" {
+			buf := new(bytes.Buffer)
+			if err := json.NewEncoder(buf).Encode(u.value); err != nil {
+				return err
+			}
+			u.valueEncoded = buf.String()
 		}
 
 		toUpd = append(toUpd, &cloudflare.WorkersKVPair{
 			Key:      u.key,
 			Metadata: u.metadata,
-			Value:    buf.String(),
+			Value:    u.valueEncoded,
 		})
 
 		updatedCids = append(updatedCids, u.cidv1)
 	}
 
-	dealKvId := cctx.String("cf-kvnamespace-deals")
-	if dealKvId == "" {
+	dealKvID := cctx.String("cf-kvnamespace-deals")
+	if dealKvID == "" {
 		return xerrors.New("config `cf-kvnamespace-deals` is not set")
 	}
 
-	api, err := cfApi(cctx)
+	api, err := cfAPI(cctx)
 	if err != nil {
 		return err
 	}
 
 	r, err := api.WriteWorkersKVBulk(
 		cctx.Context,
-		dealKvId,
+		dealKvID,
 		toUpd,
 	)
 	if err != nil {
-		return err
+		return xerrors.Errorf("WriteWorkersKVBulk failed: %w", err)
 	}
 	if !r.Success {
 		log.Panicf("unexpected bulk update response:n%s", spew.Sdump(r))
@@ -248,7 +265,7 @@ func uploadAndMarkUpdates(cctx *cli.Context, db *pgxpool.Pool, updates map[strin
 	}
 
 	countUpdated += len(updatedCids)
-	if ShowProgress && 100*countUpdated/countPending != lastPct {
+	if showProgress && 100*countUpdated/countPending != lastPct {
 		lastPct = 100 * countUpdated / countPending
 		fmt.Fprintf(os.Stderr, "%d%%\r", lastPct)
 	}

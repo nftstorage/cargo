@@ -7,12 +7,10 @@ import (
 	"github.com/filecoin-project/go-dagaggregator-unixfs"
 	"github.com/ipfs/go-blockservice"
 	"github.com/ipfs/go-cid"
-	"github.com/ipfs/go-datastore"
-	datastoresync "github.com/ipfs/go-datastore/sync"
-	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	exchangeoffline "github.com/ipfs/go-ipfs-exchange-offline"
 	"github.com/ipfs/go-merkledag"
 	"github.com/multiformats/go-multihash"
+	"github.com/nftstorage/dagcargo/lib/rambs"
 	"github.com/urfave/cli/v2"
 )
 
@@ -25,25 +23,23 @@ var aggregateDags = &cli.Command{
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
 
+		toAgg := make([]dagaggregator.AggregateDagEntry, 0, 256<<10)
+
 		db, err := connectDb(cctx)
 		if err != nil {
 			return err
 		}
 
-		toAgg := make([]dagaggregator.AggregateDagEntry, 0, 256<<10)
-
 		rows, err := db.Query(
 			ctx,
 			`
 			SELECT
-					s.cid_original,
+					d.cid_v1,
 					d.size_actual,
 					( SELECT 1+COUNT(*) FROM cargo.refs r WHERE r.cid_v1 = d.cid_v1 )
-				FROM cargo.sources s, cargo.dags d
+				FROM cargo.dags d
 			WHERE
-				s.entry_removed IS NULL
-					AND
-				d.cid_v1 = s.cid_v1
+				EXISTS ( SELECT 42 FROM cargo.sources s WHERE d.cid_v1 = s.cid_v1 AND s.entry_removed IS NULL )
 					AND
 				d.size_actual IS NOT NULL
 					AND
@@ -53,11 +49,11 @@ var aggregateDags = &cli.Command{
 					SELECT 42
 						FROM cargo.batch_entries be, cargo.batches b
 					WHERE
-							be.cid_v1 = s.cid_v1
-								AND
-							be.batch_cid = b.batch_cid
-								AND
-							b.metadata->>'type' = 'DagAggregate UnixFS'
+						be.cid_v1 = d.cid_v1
+							AND
+						be.batch_cid = b.batch_cid
+							AND
+						b.metadata->>'type' = 'DagAggregate UnixFS'
 				)
 			ORDER BY size_actual DESC
 			`,
@@ -84,12 +80,12 @@ var aggregateDags = &cli.Command{
 		log.Infof("%d candidate dags found", len(toAgg))
 
 		// run through them backwards, heaviest first
-		log.Panicw("selection implementation pending:", "first dag", toAgg[0].RootCid.String(), "size", *toAgg[0].UniqueBlockCumulativeSize)
+		log.Panicw("selection implementation pending:", "first dag", toAgg[0].RootCid.String(), "size", toAgg[0].UniqueBlockCumulativeSize)
 
-		ramBs := blockstore.NewBlockstore(datastoresync.MutexWrap(datastore.NewMapDatastore()))
+		ramBs := new(rambs.RamBs)
 		ramDs := merkledag.NewDAGService(blockservice.New(ramBs, exchangeoffline.Exchange(ramBs)))
 
-		rootCid, err := dagaggregator.Aggregate(ramDs, toAgg)
+		rootCid, err := dagaggregator.Aggregate(ctx, ramDs, toAgg)
 		if err != nil {
 			return nil
 		}
@@ -108,7 +104,7 @@ var aggregateDags = &cli.Command{
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				api := ipfsApi(cctx)
+				api := ipfsAPI(cctx)
 
 				for {
 					c, isOpen := <-newBlocksCh

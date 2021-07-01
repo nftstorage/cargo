@@ -34,6 +34,14 @@ var globalFlags = []cli.Flag{
 		Value: 64,
 	},
 	&cli.StringFlag{
+		Name:  "lotus-api",
+		Value: "http://localhost:1234",
+	},
+	&cli.UintFlag{
+		Name:  "lotus-lookback-epochs",
+		Value: 10,
+	},
+	&cli.StringFlag{
 		Name:  "pg-connstring",
 		Value: "postgres:///postgres?user=nft&password=&host=/var/run/postgresql",
 	},

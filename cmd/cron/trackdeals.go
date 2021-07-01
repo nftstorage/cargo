@@ -2,18 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"os"
 
-	"github.com/filecoin-project/lotus/chain/actors/builtin/market"
 	"github.com/ipfs/go-cid"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/xerrors"
 )
-
-type dealList map[uint64]struct {
-	Proposal market.DealProposal
-	State    market.DealState
-}
 
 var pieceCount, dealCount int
 var trackDeals = &cli.Command{
@@ -66,18 +59,25 @@ var trackDeals = &cli.Command{
 
 		log.Infof("checking the status of %d known Piece CIDs", pieceCount)
 
-		// FIXME
-		// curl -s http://127.0.0.1:1234/rpc/v0 -X POST -H "Content-Type: application/json" --data '{ "jsonrpc": "2.0", "id":1, "method": "Filecoin.StateMarketDeals", "params": [ null ] }' | less
-		inputFh, err := os.Open("deals.json")
+		api, apiClose, err := lotusAPI(cctx)
+		if err != nil {
+			return xerrors.Errorf("connecting to lotus failed: %w", err)
+		}
+		defer apiClose()
+
+		lts, err := lotusLookbackTipset(cctx, api)
 		if err != nil {
 			return err
 		}
-		var deals dealList
-		if err = json.NewDecoder(inputFh).Decode(&deals); err != nil {
+
+		log.Infof("retrieving Market Deals from state %s at epoch %d", lts.Key().String(), lts.Height())
+		deals, err := api.StateMarketDeals(ctx, lts.Key())
+		if err != nil {
 			return err
 		}
+		log.Infof("retrieved %d active deal records", len(deals))
 
-		for dealId, d := range deals {
+		for dealID, d := range deals {
 			batchCid, known := knownPieceCIDs[d.Proposal.PieceCID]
 			if !known {
 				continue
@@ -126,7 +126,7 @@ var trackDeals = &cli.Command{
 				batchCid.String(),
 				d.Proposal.Provider.String(),
 				status,
-				dealId,
+				dealID,
 				epochStart,
 				epochEnd,
 			)

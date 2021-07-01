@@ -20,12 +20,6 @@ import (
 	"golang.org/x/xerrors"
 )
 
-type pinRes struct {
-	dagSize uint64
-	cid     cid.Cid
-	refs    []cid.Cid
-}
-
 type stats struct {
 	pinned *uint64
 	failed *uint64
@@ -116,12 +110,12 @@ var pinDags = &cli.Command{
 			for c := range pinsToDo {
 				select {
 				case toPinCh <- c:
-					if ShowProgress && 100*atomic.LoadUint64(total.pinned)/uint64(len(pinsToDo)) != lastPct {
+					if showProgress && 100*atomic.LoadUint64(total.pinned)/uint64(len(pinsToDo)) != lastPct {
 						lastPct = 100 * atomic.LoadUint64(total.pinned) / uint64(len(pinsToDo))
 						fmt.Fprintf(os.Stderr, "%d%%\r", lastPct)
 					}
-				case e, isOpen := <-errCh:
-					if isOpen && e != nil {
+				case e := <-errCh:
+					if e != nil {
 						errCh <- e
 					}
 					return
@@ -151,7 +145,7 @@ var pinDags = &cli.Command{
 		}
 
 		wg.Wait()
-		if ShowProgress {
+		if showProgress {
 			defer fmt.Fprint(os.Stderr, "100%\n")
 		}
 
@@ -172,7 +166,7 @@ type refEntry struct {
 func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total stats) (err error) {
 	ctx := cctx.Context
 
-	api := ipfsApi(cctx)
+	api := ipfsAPI(cctx)
 
 	// open a tx only when/if we need one, do not hold up pg connections
 	var tx pgx.Tx
@@ -183,7 +177,7 @@ func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total s
 			atomic.AddUint64(total.failed, 1)
 
 			if tx != nil {
-				tx.Rollback(ctx) // no error checks
+				tx.Rollback(ctx) // nolint:errcheck
 			}
 
 			// Timeouts are non-fatal
@@ -210,13 +204,16 @@ func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total s
 			v0 := cid.NewCidV0(rootCid.Hash())
 			log.Warnf("aborted pin of %s due to timeout, retrying pin with %s", rootCid.String(), v0.String())
 
-			eagerApi := ipfsApi(cctx)
-			eagerApi.SetTimeout(1 * time.Minute)
-			err = eagerApi.Request("pin/add").Arguments(v0.String()).Exec(ctx, nil)
+			eagerAPI := ipfsAPI(cctx)
+			eagerAPI.SetTimeout(time.Second * time.Duration(cctx.Uint("ipfs-api-timeout")) / 5)
+			err = eagerAPI.Request("pin/add").Arguments(v0.String()).Exec(ctx, nil)
 		}
 
+		// If we fail to even pin - just warn and move on without an error ( we didn't write anything to the DB yet )
 		if err != nil {
-			return err
+			log.Warnf("failure to pin %s: %s", rootCid, err)
+			atomic.AddUint64(total.failed, 1)
+			return nil
 		}
 	}
 
@@ -278,13 +275,13 @@ func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total s
 		atomic.AddUint64(total.refs, uint64(len(refs)))
 	}
 
-	updSql := `UPDATE cargo.dags SET size_actual = $1 WHERE cid_v1 = $2`
+	updSQL := `UPDATE cargo.dags SET size_actual = $1 WHERE cid_v1 = $2`
 	updArgs := []interface{}{ds.Size, cidv1(rootCid).String()}
 
 	if tx != nil {
-		_, err = tx.Exec(ctx, updSql, updArgs...)
+		_, err = tx.Exec(ctx, updSQL, updArgs...)
 	} else {
-		_, err = db.Exec(ctx, updSql, updArgs...)
+		_, err = db.Exec(ctx, updSQL, updArgs...)
 	}
 	if err != nil {
 		return err

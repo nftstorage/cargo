@@ -36,12 +36,12 @@ var getNewNftCids = &cli.Command{
 			return err
 		}
 
-		nftKvId := cctx.String("cf-kvnamespace-nfts")
-		if nftKvId == "" {
+		nftKvID := cctx.String("cf-kvnamespace-nfts")
+		if nftKvID == "" {
 			return xerrors.New("config `cf-kvnamespace-nfts` is not set")
 		}
 
-		api, err := cfApi(cctx)
+		api, err := cfAPI(cctx)
 		if err != nil {
 			return err
 		}
@@ -49,7 +49,7 @@ var getNewNftCids = &cli.Command{
 		// kick off pulling in the background, while we pull out our current set
 		errCh := make(chan error, 1)
 		resCh := make(chan cloudflare.StorageKey, bufPresize)
-		go listAllNftKeys(ctx, api, nftKvId, resCh, errCh)
+		go listAllNftKeys(ctx, api, nftKvID, resCh, errCh)
 
 		initiallyInDb := make(map[[2]string]struct{}, bufPresize)
 
@@ -96,7 +96,7 @@ var getNewNftCids = &cli.Command{
 
 			seen++
 
-			if ShowProgress && projected > 0 && 100*seen/projected != lastPct {
+			if showProgress && projected > 0 && 100*seen/projected != lastPct {
 				lastPct = 100 * seen / projected
 				fmt.Fprintf(os.Stderr, "%d%%\r", lastPct)
 			}
@@ -202,7 +202,7 @@ var getNewNftCids = &cli.Command{
 	},
 }
 
-func listAllNftKeys(ctx context.Context, api *cloudflare.API, nftKvId string, resCh chan<- cloudflare.StorageKey, errCh chan<- error) {
+func listAllNftKeys(ctx context.Context, api *cloudflare.API, nftKvID string, resCh chan<- cloudflare.StorageKey, errCh chan<- error) {
 	defer close(resCh)
 	defer close(errCh)
 
@@ -214,7 +214,7 @@ func listAllNftKeys(ctx context.Context, api *cloudflare.API, nftKvId string, re
 			opts.Cursor = &nextPageCursor
 		}
 
-		resp, err := api.ListWorkersKVsWithOptions(ctx, nftKvId, opts)
+		resp, err := api.ListWorkersKVsWithOptions(ctx, nftKvID, opts)
 		if err != nil {
 			errCh <- err
 			return
