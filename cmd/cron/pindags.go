@@ -217,6 +217,10 @@ func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total s
 		}
 	}
 
+	// We got that far: means we have the pin
+	// Allow for obscenely long stat/refs times
+	api.SetTimeout(time.Second * time.Duration(cctx.Uint("ipfs-api-timeout")) * 15)
+
 	ds := new(dagStat)
 	err = api.Request("dag/stat").Arguments(rootCid.String()).Option("progress", "false").Exec(ctx, ds)
 	if err != nil {
