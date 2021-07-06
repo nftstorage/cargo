@@ -122,88 +122,94 @@ var exportStatus = &cli.Command{
 			return err
 		}
 
-		approxBytes := 0
+		var priorKey string
 		updates := make(map[string]*statusUpdate, 10000)
+		updatesApproxBytes := 0
 
 		for rows.Next() {
 
-			u := new(statusUpdate)
-			du := new(statusDealEntry)
+			curCidReceiver := new(statusUpdate)
+			curDeal := new(statusDealEntry)
 			var eStart, eEnd *int64
 			if err = rows.Scan(
-				&u.key,
-				&u.cidv1,
-				&u.metadata.Queued,
-				&u.metadata.Proposing,
-				&u.metadata.Accepted,
-				&u.metadata.Failed,
-				&u.metadata.Published,
-				&u.metadata.Active,
-				&u.metadata.Terminated,
-				&du.Status,
-				&du.LastChanged,
-				&du.BatchRootCid,
-				&du.PieceCid,
-				&du.Miner,
-				&du.ChainDealID,
-				&du.DatamodelSelector,
+				&curCidReceiver.key,
+				&curCidReceiver.cidv1,
+				&curCidReceiver.metadata.Queued,
+				&curCidReceiver.metadata.Proposing,
+				&curCidReceiver.metadata.Accepted,
+				&curCidReceiver.metadata.Failed,
+				&curCidReceiver.metadata.Published,
+				&curCidReceiver.metadata.Active,
+				&curCidReceiver.metadata.Terminated,
+				&curDeal.Status,
+				&curDeal.LastChanged,
+				&curDeal.BatchRootCid,
+				&curDeal.PieceCid,
+				&curDeal.Miner,
+				&curDeal.ChainDealID,
+				&curDeal.DatamodelSelector,
 				&eStart,
 				&eEnd,
 			); err != nil {
 				return err
 			}
 
-			if _, exists := updates[u.key]; !exists {
+			// this is a new key - since we are ordered we know we are done with the prior one
+			if _, exists := updates[curCidReceiver.key]; !exists {
 
-				// we are changing the key: encode everything accumulated
-				buf := new(bytes.Buffer)
-				if err := json.NewEncoder(buf).Encode(u.value); err != nil {
-					return err
+				// deal with prior state if any
+				if priorKey != "" {
+					// we will be changing the key: encode everything accumulated
+					priorRecord := updates[priorKey]
+					buf := new(bytes.Buffer)
+					if err := json.NewEncoder(buf).Encode(priorRecord.value); err != nil {
+						return err
+					}
+					priorRecord.valueEncoded = buf.String()
+					updatesApproxBytes += len(priorRecord.valueEncoded)
 				}
-				u.valueEncoded = buf.String()
 
-				approxBytes += len(u.valueEncoded)
+				priorKey = curCidReceiver.key
 
 				// see if we grew too big and need to flush
 				// 10k entries / 100MiB size
-				if len(updates) > 9999 || approxBytes > 95<<20 {
+				if len(updates) > 9999 || updatesApproxBytes > 95<<20 {
 					if err = uploadAndMarkUpdates(cctx, db, updates); err != nil {
 						return err
 					}
 					// reset
-					approxBytes = 0
+					updatesApproxBytes = 0
 					updates = make(map[string]*statusUpdate, 10000)
 				}
 
-				updates[u.key] = u
+				updates[curCidReceiver.key] = curCidReceiver
 			}
-			u = updates[u.key]
 
-			duU := du.LastChanged.Unix()
-			du.LastChangedUnix = &duU
+			lcU := curDeal.LastChanged.Unix()
+			curDeal.LastChangedUnix = &lcU
 
-			if du.Status == nil {
+			if curDeal.Status == nil {
 				s := "queued"
-				du.Status = &s
+				curDeal.Status = &s
 			} else {
 				n := "mainnet"
-				du.Network = &n
+				curDeal.Network = &n
 
 				if eStart != nil {
 					t := mainnetTime(*eStart)
-					du.DealActivation = &t
+					curDeal.DealActivation = &t
 					tu := t.Unix()
-					du.DealActivationUnix = &tu
+					curDeal.DealActivationUnix = &tu
 				}
 				if eEnd != nil {
 					t := mainnetTime(*eEnd)
-					du.DealExpiration = &t
+					curDeal.DealExpiration = &t
 					tu := t.Unix()
-					du.DealExpirationUnix = &tu
+					curDeal.DealExpirationUnix = &tu
 				}
 			}
 
-			u.value = append(u.value, du)
+			updates[priorKey].value = append(updates[priorKey].value, curDeal)
 		}
 
 		return uploadAndMarkUpdates(cctx, db, updates)
