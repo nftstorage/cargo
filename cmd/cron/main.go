@@ -125,6 +125,7 @@ var beforeCliSetup = func(cctx *cli.Context) error {
 
 	// figure out what is the command that was invoked
 	if len(os.Args) > 1 {
+
 		cmdNames := make(map[string]string)
 		for _, c := range cctx.App.Commands {
 			cmdNames[c.Name] = c.Name
@@ -132,17 +133,33 @@ var beforeCliSetup = func(cctx *cli.Context) error {
 				cmdNames[a] = c.Name
 			}
 		}
+
+		var firstCmdOccurence string
 		for i := 1; i < len(os.Args); i++ {
-			if cmd, found := cmdNames[os.Args[i]]; found {
-				var err error
-				if currentCmdLock, err = fslock.Lock(os.TempDir(), "cargocron-"+cmd); err != nil {
-					return err
-				}
-				currentCmd = cmd
-				log.Infow(fmt.Sprintf("=== BEGIN '%s' run", currentCmd))
-				break
+
+			// if we are in help context - no locks and no start/stop timers
+			if os.Args[i] == `-h` || os.Args[i] == `--help` {
+				return nil
 			}
+
+			if firstCmdOccurence != "" {
+				continue
+			}
+			firstCmdOccurence = cmdNames[os.Args[i]]
 		}
+
+		// wrong cmd or something
+		if firstCmdOccurence == "" {
+			return nil
+		}
+
+		var err error
+		if currentCmdLock, err = fslock.Lock(os.TempDir(), "cargocron-"+firstCmdOccurence); err != nil {
+			return err
+		}
+		currentCmd = firstCmdOccurence
+		log.Infow(fmt.Sprintf("=== BEGIN '%s' run", currentCmd))
 	}
+
 	return nil
 }

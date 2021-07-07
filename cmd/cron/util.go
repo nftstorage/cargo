@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"time"
 
@@ -23,7 +24,7 @@ const (
 )
 
 var (
-	log          = logging.Logger("dagcargo-cron")
+	log          = logging.Logger(fmt.Sprintf("dagcargo-cron(%d)", os.Getpid()))
 	showProgress = isatty.IsTerminal(os.Stderr.Fd())
 )
 
