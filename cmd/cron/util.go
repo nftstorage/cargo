@@ -9,7 +9,9 @@ import (
 	"github.com/filecoin-project/go-jsonrpc"
 	filabi "github.com/filecoin-project/go-state-types/abi"
 	lotusapi "github.com/filecoin-project/lotus/api"
+	filbuild "github.com/filecoin-project/lotus/build"
 	filtypes "github.com/filecoin-project/lotus/chain/types"
+	filactors "github.com/filecoin-project/specs-actors/actors/builtin"
 	"github.com/ipfs/go-cid"
 	ipfsapi "github.com/ipfs/go-ipfs-api"
 	logging "github.com/ipfs/go-log/v2"
@@ -86,6 +88,23 @@ func lotusLookbackTipset(cctx *cli.Context, api *lotusapi.FullNodeStruct) (*filt
 	head, err := api.ChainHead(cctx.Context)
 	if err != nil {
 		return nil, xerrors.Errorf("failed getting chain head: %w", err)
+	}
+
+	wallUnix := time.Now().Unix()
+	filUnix := int64(head.Blocks()[0].Timestamp)
+
+	if wallUnix < filUnix ||
+		wallUnix > filUnix+int64(
+			// allow up to 2 nul tipsets in a row ( virtually impossible )
+			filbuild.PropagationDelaySecs+(2*filactors.EpochDurationSeconds),
+		) {
+		return nil, xerrors.Errorf(
+			"lotus API out of sync: chainHead reports unixtime %d (height: %d) while walltime is %d (delta: %s)",
+			filUnix,
+			head.Height(),
+			wallUnix,
+			time.Second*time.Duration(wallUnix-filUnix),
+		)
 	}
 
 	ts, err := api.ChainGetTipSetByHeight(cctx.Context, head.Height()-filabi.ChainEpoch(cctx.Uint("lotus-lookback-epochs")), head.Key())
