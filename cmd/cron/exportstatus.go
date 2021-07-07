@@ -172,8 +172,8 @@ var exportStatus = &cli.Command{
 				priorKey = curCidReceiver.key
 
 				// see if we grew too big and need to flush
-				// 10k entries / 100MiB size
-				if len(updates) > 9999 || updatesApproxBytes > 95<<20 {
+				// 10k entries / 100MiB size ( round down for overhead, can be significant )
+				if len(updates) > 9999 || updatesApproxBytes > (85<<20) {
 					if err = uploadAndMarkUpdates(cctx, db, updates); err != nil {
 						return err
 					}
