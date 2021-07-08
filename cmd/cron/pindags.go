@@ -180,9 +180,9 @@ func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total s
 				tx.Rollback(ctx) // nolint:errcheck
 			}
 
-			// Timeouts are non-fatal
+			// Timeouts are non-fatal, but still logged as an error
 			if ue, castOk := err.(*url.Error); castOk && ue.Timeout() {
-				log.Warnf("aborting '%s' of '%s' due to timeout: %s", ue.Op, ue.URL, ue.Unwrap().Error())
+				log.Errorf("aborting '%s' of '%s' due to timeout: %s", ue.Op, ue.URL, ue.Unwrap().Error())
 				err = nil
 			}
 		} else if tx != nil {
