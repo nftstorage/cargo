@@ -1,4 +1,5 @@
 cf-account = "..."
 cf-kvnamespace-nfts = "..."
 cf-kvnamespace-deals = "..."
+cf-kvnamespace-users = "..."
 cf-bearer-token = "..."

@@ -58,6 +58,10 @@ var globalFlags = []cli.Flag{
 		DefaultText: " {{ private read from config file }} ",
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
+		Name:        "cf-kvnamespace-users",
+		DefaultText: " {{ private read from config file }} ",
+	}),
+	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "cf-bearer-token",
 		DefaultText: " {{ private read from config file }} ",
 	}),

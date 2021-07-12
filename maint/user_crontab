@@ -5,10 +5,10 @@
 #
 GOLOG_LOG_FMT=json
 
-*/10 * * * *    LOGDIR="$HOME/LOGS/$(date '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron get-new-nfts                        >>"$LOGDIR/cron_get-new-nfts.log.ndjson"	2>&1
+*/15 * * * *    LOGDIR="$HOME/LOGS/$(date '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron get-new-nfts                        >>"$LOGDIR/cron_get-new-nfts.log.ndjson" 2>&1
 */5 * * * *     LOGDIR="$HOME/LOGS/$(date '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron export-status                       >>"$LOGDIR/cron_export-status.log.ndjson" 2>&1
-5-55/10 * * * *	LOGDIR="$HOME/LOGS/$(date '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron track-deals                         >>"$LOGDIR/cron_track-deals.log.ndjson" 2>&1
-5-55/10 * * * *	LOGDIR="$HOME/LOGS/$(date '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron --ipfs-api-max-workers 256 pin-dags >>"$LOGDIR/cron_pin-dags.log.ndjson" 2>&1
+*/5 * * * *     LOGDIR="$HOME/LOGS/$(date '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron track-deals                         >>"$LOGDIR/cron_track-deals.log.ndjson" 2>&1
+5-55/15 * * * * LOGDIR="$HOME/LOGS/$(date '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron --ipfs-api-max-workers 256 pin-dags >>"$LOGDIR/cron_pin-dags.log.ndjson" 2>&1
 
 # every half hour try to pin (for 25 minutes) whatever we may have missed
 14,44 * * * *   LOGDIR="$HOME/LOGS/$(date '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && timeout 1500 $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/cron_sweep-missed-pins.log" 2>&1

@@ -4,6 +4,7 @@ use warnings;
 use strict;
 
 use DBIx::Class::Schema::Loader;
+use DBIx::Class::_Util 'sigwarn_silencer';
 use SQL::Translator;
 
 {
@@ -15,6 +16,8 @@ use SQL::Translator;
     db_schema => 'cargo',
   );
 }
+
+$SIG{__WARN__} = sigwarn_silencer(qr/collides with an inherited method/);
 
 my $trans = SQL::Translator->new(
     parser        => 'SQL::Translator::Parser::DBIx::Class',

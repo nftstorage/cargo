@@ -40,6 +40,10 @@ var getNewNftCids = &cli.Command{
 		if nftKvID == "" {
 			return xerrors.New("config `cf-kvnamespace-nfts` is not set")
 		}
+		userKvID := cctx.String("cf-kvnamespace-users")
+		if userKvID == "" {
+			return xerrors.New("config `cf-kvnamespace-users` is not set")
+		}
 
 		api, err := cfAPI(cctx)
 		if err != nil {
@@ -51,35 +55,53 @@ var getNewNftCids = &cli.Command{
 		resCh := make(chan cloudflare.StorageKey, bufPresize)
 		go listAllNftKeys(ctx, api, nftKvID, resCh, errCh)
 
-		initiallyInDb := make(map[[2]string]struct{}, bufPresize)
-
+		knownSources := make(map[string]struct{}, bufPresize)
 		rows, err := db.Query(
 			ctx,
-			`SELECT cid_original, source FROM cargo.sources WHERE entry_removed IS NULL`,
+			`SELECT source FROM cargo.sources WHERE details IS NOT NULL`,
 		)
 		if err != nil {
 			return err
 		}
-		var orig, src string
+		var src string
+		for rows.Next() {
+			if err = rows.Scan(&src); err != nil {
+				return err
+			}
+			knownSources[src] = struct{}{}
+		}
+		rows.Close()
+
+		initiallyInDb := make(map[[2]string]struct{}, bufPresize)
+		rows, err = db.Query(
+			ctx,
+			`SELECT cid_original, source FROM cargo.dag_sources WHERE entry_removed IS NULL`,
+		)
+		if err != nil {
+			return err
+		}
+		var orig string
 		for rows.Next() {
 			if err = rows.Scan(&orig, &src); err != nil {
 				return err
 			}
 			initiallyInDb[[2]string{orig, src}] = struct{}{}
 		}
+		rows.Close()
 
-		log.Infof("loaded %d already known cid+source pairs", len(initiallyInDb))
+		log.Infof("loaded %d already-known sources and %d cid+source pairs", len(knownSources), len(initiallyInDb))
 
-		var lastPct, seen, new, removed int
+		var lastPct, seen, new, newSources, removed int
 		projected := len(initiallyInDb)
 		initially := projected
 
 		defer func() {
 			log.Infow("summary",
-				"total", seen,
-				"initial", initially,
-				"new", new,
-				"removed", removed,
+				"totalDags", seen,
+				"initialDags", initially,
+				"newDags", new,
+				"newSources", newSources,
+				"removedDags", removed,
 			)
 		}()
 
@@ -163,10 +185,35 @@ var getNewNftCids = &cli.Command{
 				return err
 			}
 
+			if _, known := knownSources[source]; !known {
+
+				sourceDetails, err := api.ReadWorkersKV(ctx, userKvID, source)
+				if err != nil {
+					log.Warnf("failure retrieving details for source '%s': %s", source, err)
+				} else {
+					newSources++
+				}
+
+				_, err = db.Exec(
+					ctx,
+					`
+					INSERT INTO cargo.sources ( source, details ) VALUES ( $1, $2 )
+						ON CONFLICT ( source ) DO UPDATE SET details = COALESCE( sources.details, EXCLUDED.details ) -- no overwrites
+					`,
+					source,
+					sourceDetails,
+				)
+				if err != nil {
+					return err
+				}
+
+				knownSources[source] = struct{}{}
+			}
+
 			_, err = db.Exec(
 				ctx,
 				`
-				INSERT INTO cargo.sources ( cid_v1, cid_original, source, entry_created ) VALUES ( $1, $2, $3, COALESCE( $4, NOW() ) )
+				INSERT INTO cargo.dag_sources ( cid_v1, cid_original, source, entry_created ) VALUES ( $1, $2, $3, COALESCE( $4, NOW() ) )
 					ON CONFLICT ON CONSTRAINT singleton_source_record DO UPDATE SET entry_removed = NULL
 				`,
 				cidNormStr,
@@ -189,7 +236,7 @@ var getNewNftCids = &cli.Command{
 				if _, err = db.Exec(
 					ctx,
 					`
-					UPDATE cargo.sources SET entry_removed = NOW() WHERE cid_original = $1 AND source = $2
+					UPDATE cargo.dag_sources SET entry_removed = NOW() WHERE cid_original = $1 AND source = $2
 					`,
 					k[0], k[1],
 				); err != nil {

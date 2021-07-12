@@ -69,12 +69,10 @@ var exportStatus = &cli.Command{
 		toUpdateCond := `
 			d.size_actual IS NOT NULL
 				AND
-			d.size_actual < 34000000000
-				AND
 			( d.entry_last_exported IS NULL OR d.entry_last_updated > d.entry_last_exported )
 		`
 
-		err = db.QueryRow(ctx, `SELECT COUNT(*) FROM cargo.sources s JOIN cargo.dags d USING ( cid_v1 ) WHERE `+toUpdateCond).Scan(&countPending)
+		err = db.QueryRow(ctx, `SELECT COUNT(*) FROM cargo.dag_sources ds JOIN cargo.dags d USING ( cid_v1 ) WHERE `+toUpdateCond).Scan(&countPending)
 		if err != nil {
 			return err
 		}
@@ -86,17 +84,35 @@ var exportStatus = &cli.Command{
 
 		rows, err := db.Query(
 			ctx,
-			fmt.Sprintf(`
+			fmt.Sprintf(
+				`
 				SELECT
-						s.cid_original,
-						s.cid_v1,
-						( CASE WHEN EXISTS ( SELECT 42 FROM cargo.batch_entries be WHERE be.cid_v1 = s.cid_v1 ) THEN 0 ELSE 1 END ) AS queued,
+						ds.cid_original,
+						ds.cid_v1,
+						(
+							CASE WHEN
+								ds.entry_removed IS NOT NULL
+									OR
+								COALESCE( ( s.details ->> 'dcweight' )::INTEGER, 0 ) < 0
+									OR
+								EXISTS (
+									SELECT 42 FROM cargo.batch_entries be, cargo.deals de
+									WHERE ds.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status IN ( 'published', 'active' )
+								)
+									OR
+								-- anything that is a member of something else from the same source
+								EXISTS (
+									SELECT 42 FROM cargo.refs r, cargo.dag_sources dsr
+									WHERE r.ref_v1 = ds.cid_v1 AND r.cid_v1 = dsr.cid_v1 AND dsr.source = ds.source
+								)
+							THEN 0 ELSE 1 END
+						) AS queued,
 						0 AS proposing,
 						0 AS accepted,
 						0 AS failed,
-						( SELECT COUNT(DISTINCT(de.deal_id)) FROM cargo.batch_entries be, cargo.deals de WHERE s.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status = 'published' ) AS published,
-						( SELECT COUNT(DISTINCT(de.deal_id)) FROM cargo.batch_entries be, cargo.deals de WHERE s.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status = 'active' ) AS active,
-						0 AS terminated,
+						( SELECT COUNT(de.deal_id) FROM cargo.batch_entries be, cargo.deals de WHERE ds.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status = 'published' ) AS published,
+						( SELECT COUNT(de.deal_id) FROM cargo.batch_entries be, cargo.deals de WHERE ds.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status = 'active' ) AS active,
+						( SELECT COUNT(de.deal_id) FROM cargo.batch_entries be, cargo.deals de WHERE ds.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status = 'terminated' ) AS terminated,
 						de.status,
 						d.entry_last_updated,
 						be.batch_cid,
@@ -106,13 +122,14 @@ var exportStatus = &cli.Command{
 						be.datamodel_selector,
 						de.epoch_start,
 						de.epoch_end
-					FROM cargo.sources s
+					FROM cargo.dag_sources ds
+					JOIN cargo.sources s USING ( source )
 					JOIN cargo.dags d USING ( cid_v1 )
 					LEFT JOIN cargo.batch_entries be USING ( cid_v1 )
 					LEFT JOIN cargo.batches b USING ( batch_cid )
 					LEFT JOIN cargo.deals de USING ( batch_cid )
 				WHERE %s
-				ORDER BY s.cid_original -- order is critical to form bulk-update batches
+				ORDER BY ds.cid_original -- order is critical to form bulk-update batches
 				`,
 
 				toUpdateCond,
@@ -223,6 +240,9 @@ func uploadAndMarkUpdates(cctx *cli.Context, db *pgxpool.Pool, updates map[strin
 	for _, u := range updates {
 
 		if u.valueEncoded == "" {
+			if u.value == nil {
+				return xerrors.Errorf("unexpected nil value for %s", u.key)
+			}
 			buf := new(bytes.Buffer)
 			if err := json.NewEncoder(buf).Encode(u.value); err != nil {
 				return err

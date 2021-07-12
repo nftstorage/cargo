@@ -39,7 +39,7 @@ var aggregateDags = &cli.Command{
 					( SELECT 1+COUNT(*) FROM cargo.refs r WHERE r.cid_v1 = d.cid_v1 )
 				FROM cargo.dags d
 			WHERE
-				EXISTS ( SELECT 42 FROM cargo.sources s WHERE d.cid_v1 = s.cid_v1 AND s.entry_removed IS NULL )
+				EXISTS ( SELECT 42 FROM cargo.dag_sources ds WHERE d.cid_v1 = ds.cid_v1 AND ds.entry_removed IS NULL )
 					AND
 				d.size_actual IS NOT NULL
 					AND
