@@ -39,7 +39,8 @@ var pinDags = &cli.Command{
 	},
 	Action: func(cctx *cli.Context) error {
 
-		ctx, closer := context.WithCancel(cctx.Context)
+		var closer func()
+		cctx.Context, closer = context.WithCancel(cctx.Context)
 		defer closer()
 
 		db, err := connectDb(cctx)
@@ -50,7 +51,7 @@ var pinDags = &cli.Command{
 		pinsToDo := make(map[cid.Cid]struct{}, bufPresize)
 
 		rows, err := db.Query(
-			ctx,
+			cctx.Context,
 			`
 			SELECT cid_v1 FROM cargo.dags WHERE
 				size_actual IS NULL
@@ -73,6 +74,9 @@ var pinDags = &cli.Command{
 				return err
 			}
 			pinsToDo[c] = struct{}{}
+		}
+		if err := rows.Err(); err != nil {
+			return err
 		}
 
 		total := stats{
@@ -99,19 +103,33 @@ var pinDags = &cli.Command{
 		}
 
 		toPinCh := make(chan cid.Cid, 2*maxWorkers)
-		errCh := make(chan error, maxWorkers)
+		errCh := make(chan error, 1+maxWorkers)
 
 		log.Infof("about to pin and analyze %d dags", len(pinsToDo))
 
 		go func() {
 			defer close(toPinCh) // signal to workers to quit
 
+			var progressTick <-chan time.Time
+			if showProgress {
+				fmt.Fprint(os.Stderr, "0%\r")
+				t := time.NewTicker(250 * time.Millisecond)
+				progressTick = t.C
+				defer t.Stop()
+			}
+
 			lastPct := uint64(101)
 			for c := range pinsToDo {
 				select {
 				case toPinCh <- c:
-					if showProgress && 100*atomic.LoadUint64(total.pinned)/uint64(len(pinsToDo)) != lastPct {
-						lastPct = 100 * atomic.LoadUint64(total.pinned) / uint64(len(pinsToDo))
+					// feeder
+				case <-cctx.Context.Done():
+					errCh <- cctx.Context.Err()
+					return
+				case <-progressTick:
+					curPct := 100 * atomic.LoadUint64(total.pinned) / uint64(len(pinsToDo))
+					if curPct != lastPct {
+						lastPct = curPct
 						fmt.Fprintf(os.Stderr, "%d%%\r", lastPct)
 					}
 				case e := <-errCh:
@@ -164,7 +182,6 @@ type refEntry struct {
 }
 
 func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total stats) (err error) {
-	ctx := cctx.Context
 
 	api := ipfsAPI(cctx)
 
@@ -172,12 +189,16 @@ func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total s
 	var tx pgx.Tx
 
 	defer func() {
+		if err == nil {
+			err = cctx.Err()
+		}
+
 		if err != nil {
 
 			atomic.AddUint64(total.failed, 1)
 
 			if tx != nil {
-				tx.Rollback(ctx) // nolint:errcheck
+				tx.Rollback(context.Background()) // nolint:errcheck
 			}
 
 			// Timeouts are non-fatal, but still logged as an error
@@ -186,11 +207,11 @@ func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total s
 				err = nil
 			}
 		} else if tx != nil {
-			err = tx.Commit(ctx)
+			err = tx.Commit(cctx.Context)
 		}
 	}()
 
-	err = api.Request("pin/add").Arguments(rootCid.String()).Exec(ctx, nil)
+	err = api.Request("pin/add").Arguments(rootCid.String()).Exec(cctx.Context, nil)
 	if err != nil {
 
 		ue, castOk := err.(*url.Error)
@@ -206,7 +227,7 @@ func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total s
 
 			eagerAPI := ipfsAPI(cctx)
 			eagerAPI.SetTimeout(time.Second * time.Duration(cctx.Uint("ipfs-api-timeout")) / 5)
-			err = eagerAPI.Request("pin/add").Arguments(v0.String()).Exec(ctx, nil)
+			err = eagerAPI.Request("pin/add").Arguments(v0.String()).Exec(cctx.Context, nil)
 		}
 
 		// If we fail to even pin - just warn and move on without an error ( we didn't write anything to the DB yet )
@@ -222,7 +243,7 @@ func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total s
 	api.SetTimeout(time.Second * time.Duration(cctx.Uint("ipfs-api-timeout")) * 15)
 
 	ds := new(dagStat)
-	err = api.Request("dag/stat").Arguments(rootCid.String()).Option("progress", "false").Exec(ctx, ds)
+	err = api.Request("dag/stat").Arguments(rootCid.String()).Option("progress", "false").Exec(cctx.Context, ds)
 	if err != nil {
 		return err
 	}
@@ -232,7 +253,7 @@ func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total s
 		refs := make([][]interface{}, 0, 256)
 
 		var resp *ipfsapi.Response
-		resp, err = api.Request("refs").Arguments(rootCid.String()).Option("unique", "true").Option("recursive", "true").Send(ctx)
+		resp, err = api.Request("refs").Arguments(rootCid.String()).Option("unique", "true").Option("recursive", "true").Send(cctx.Context)
 
 		dec := json.NewDecoder(resp.Output)
 		for {
@@ -261,13 +282,13 @@ func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total s
 			})
 		}
 
-		tx, err = db.Begin(ctx)
+		tx, err = db.Begin(cctx.Context)
 		if err != nil {
 			return err
 		}
 
 		_, err = tx.CopyFrom(
-			ctx,
+			cctx.Context,
 			pgx.Identifier{"cargo", "refs"},
 			[]string{"cid_v1", "ref_v1"},
 			pgx.CopyFromRows(refs),
@@ -283,9 +304,9 @@ func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total s
 	updArgs := []interface{}{ds.Size, cidv1(rootCid).String()}
 
 	if tx != nil {
-		_, err = tx.Exec(ctx, updSQL, updArgs...)
+		_, err = tx.Exec(cctx.Context, updSQL, updArgs...)
 	} else {
-		_, err = db.Exec(ctx, updSQL, updArgs...)
+		_, err = db.Exec(cctx.Context, updSQL, updArgs...)
 	}
 	if err != nil {
 		return err

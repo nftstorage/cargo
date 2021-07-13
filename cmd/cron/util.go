@@ -69,7 +69,7 @@ func cfAPI(cctx *cli.Context) (*cloudflare.API, error) {
 	}
 
 	return cloudflare.NewWithAPIToken(bearer,
-		cloudflare.UsingRetryPolicy(5, 2, 30),
+		cloudflare.UsingRetryPolicy(6, 2, 30),
 		cloudflare.UsingAccount(acc),
 	)
 }

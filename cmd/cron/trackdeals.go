@@ -47,6 +47,9 @@ var trackDeals = &cli.Command{
 			}
 			knownPieceCIDs[pCid] = bCid
 		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
 
 		pieceCount = len(knownPieceCIDs)
 		defer func() {

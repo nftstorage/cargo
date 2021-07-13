@@ -12,7 +12,6 @@ import (
 	"github.com/cloudflare/cloudflare-go"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ipfs/go-cid"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
 )
@@ -27,11 +26,7 @@ var getNewNftCids = &cli.Command{
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
 
-		dbConnCfg, err := pgxpool.ParseConfig(cctx.String("pg-connstring"))
-		if err != nil {
-			return err
-		}
-		db, err := pgxpool.ConnectConfig(ctx, dbConnCfg)
+		db, err := connectDb(cctx)
 		if err != nil {
 			return err
 		}
@@ -51,7 +46,7 @@ var getNewNftCids = &cli.Command{
 		}
 
 		// kick off pulling in the background, while we pull out our current set
-		errCh := make(chan error, 1)
+		errCh := make(chan error, 2)
 		resCh := make(chan cloudflare.StorageKey, bufPresize)
 		go listAllNftKeys(ctx, api, nftKvID, resCh, errCh)
 
@@ -70,7 +65,9 @@ var getNewNftCids = &cli.Command{
 			}
 			knownSources[src] = struct{}{}
 		}
-		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
 
 		initiallyInDb := make(map[[2]string]struct{}, bufPresize)
 		rows, err = db.Query(
@@ -87,7 +84,9 @@ var getNewNftCids = &cli.Command{
 			}
 			initiallyInDb[[2]string{orig, src}] = struct{}{}
 		}
-		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
 
 		log.Infof("loaded %d already-known sources and %d cid+source pairs", len(knownSources), len(initiallyInDb))
 
@@ -105,11 +104,11 @@ var getNewNftCids = &cli.Command{
 			)
 		}()
 
-	listDone:
+		// main loop parsing and inserting
 		for {
 			r, isOpen := <-resCh
 			if !isOpen {
-				break listDone
+				break
 			}
 
 			if len(errCh) > 0 {
@@ -286,7 +285,13 @@ func listAllNftKeys(ctx context.Context, api *cloudflare.API, nftKvID string, re
 		}
 
 		for _, r := range resp.Result {
-			resCh <- r
+			select {
+			case <-ctx.Done():
+				errCh <- ctx.Err()
+				return
+			case resCh <- r:
+				// feeder
+			}
 		}
 
 		if resp.Cursor == "" {

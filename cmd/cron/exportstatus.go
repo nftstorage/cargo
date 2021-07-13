@@ -228,6 +228,9 @@ var exportStatus = &cli.Command{
 
 			updates[priorKey].value = append(updates[priorKey].value, curDeal)
 		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
 
 		return uploadAndMarkUpdates(cctx, db, updates)
 	},
