@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -47,23 +48,23 @@ var globalFlags = []cli.Flag{
 	},
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "cf-account",
-		DefaultText: " {{ private read from config file }} ",
+		DefaultText: "  {{ private, read from config file }}  ",
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "cf-kvnamespace-nfts",
-		DefaultText: " {{ private read from config file }} ",
+		DefaultText: "  {{ private, read from config file }}  ",
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "cf-kvnamespace-deals",
-		DefaultText: " {{ private read from config file }} ",
+		DefaultText: "  {{ private, read from config file }}  ",
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "cf-kvnamespace-users",
-		DefaultText: " {{ private read from config file }} ",
+		DefaultText: "  {{ private, read from config file }}  ",
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "cf-bearer-token",
-		DefaultText: " {{ private read from config file }} ",
+		DefaultText: "  {{ private, read from config file }}  ",
 	}),
 }
 
@@ -74,6 +75,7 @@ func main() {
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, unix.SIGINT, unix.SIGTERM)
 		<-sigs
+		log.Warn("early termination signal received, cleaning up...")
 		cancel()
 	}()
 
@@ -100,6 +102,12 @@ func main() {
 	}
 
 	if err != nil {
+
+		// if we are not interactive - be quiet on a failed lock
+		if !showProgress && errors.As(err, new(fslock.LockedError)) {
+			os.Exit(1)
+		}
+
 		log.Error(err)
 		if currentCmdLock != nil {
 			log.Warnw(logHdr, logArgs...)

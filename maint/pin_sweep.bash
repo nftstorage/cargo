@@ -9,7 +9,7 @@ cids_pending="$(
 
 # Connect to anything claiming to have our stuff
 echo "$cids_pending" \
-| xargs -P1024 -n1 $HOME/go-ipfs/cmd/ipfs/ipfs dht findprovs \
+| xargs -P1024 -n1 timeout 30 $HOME/go-ipfs/cmd/ipfs/ipfs dht findprovs \
 | sort -u \
 | sed 's/^/\/p2p\//' \
 | xargs -P 256 -n1 $HOME/go-ipfs/cmd/ipfs/ipfs swarm connect &>/dev/null

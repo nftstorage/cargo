@@ -61,6 +61,8 @@ var exportStatus = &cli.Command{
 		defer func() { log.Infow("summary", "updated", countUpdated) }()
 		lastPct = 101
 
+		t0 := time.Now()
+
 		db, err := connectDb(cctx)
 		if err != nil {
 			return err
@@ -91,30 +93,23 @@ var exportStatus = &cli.Command{
 						ds.cid_v1,
 						(
 							CASE WHEN
+								d.size_actual IS NULL
+									OR
 								ds.entry_removed IS NOT NULL
 									OR
 								COALESCE( ( s.details ->> 'dcweight' )::INTEGER, 0 ) < 0
 									OR
 								EXISTS (
 									SELECT 42 FROM cargo.batch_entries be, cargo.deals de
-									WHERE ds.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status IN ( 'published', 'active' )
-								)
-									OR
-								-- anything that is a member of something else from the same source
-								EXISTS (
-									SELECT 42 FROM cargo.refs r, cargo.dag_sources dsr
-									WHERE r.ref_v1 = ds.cid_v1 AND r.cid_v1 = dsr.cid_v1 AND dsr.source = ds.source
+									WHERE ds.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status IN ( 'active' )
 								)
 							THEN 0 ELSE 1 END
 						) AS queued,
-						0 AS proposing,
-						0 AS accepted,
-						0 AS failed,
 						( SELECT COUNT(de.deal_id) FROM cargo.batch_entries be, cargo.deals de WHERE ds.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status = 'published' ) AS published,
 						( SELECT COUNT(de.deal_id) FROM cargo.batch_entries be, cargo.deals de WHERE ds.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status = 'active' ) AS active,
 						( SELECT COUNT(de.deal_id) FROM cargo.batch_entries be, cargo.deals de WHERE ds.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status = 'terminated' ) AS terminated,
 						de.status,
-						d.entry_last_updated,
+						COALESCE( de.entry_last_updated, d.entry_last_updated ),
 						be.batch_cid,
 						b.piece_cid,
 						de.provider,
@@ -152,9 +147,6 @@ var exportStatus = &cli.Command{
 				&curCidReceiver.key,
 				&curCidReceiver.cidv1,
 				&curCidReceiver.metadata.Queued,
-				&curCidReceiver.metadata.Proposing,
-				&curCidReceiver.metadata.Accepted,
-				&curCidReceiver.metadata.Failed,
 				&curCidReceiver.metadata.Published,
 				&curCidReceiver.metadata.Active,
 				&curCidReceiver.metadata.Terminated,
@@ -191,7 +183,7 @@ var exportStatus = &cli.Command{
 				// see if we grew too big and need to flush
 				// 10k entries / 100MiB size ( round down for overhead, can be significant )
 				if len(updates) > 9999 || updatesApproxBytes > (85<<20) {
-					if err = uploadAndMarkUpdates(cctx, db, updates); err != nil {
+					if err = uploadAndMarkUpdates(cctx, db, t0, updates); err != nil {
 						return err
 					}
 					// reset
@@ -199,7 +191,14 @@ var exportStatus = &cli.Command{
 					updates = make(map[string]*statusUpdate, 10000)
 				}
 
+				curCidReceiver.value = make([]*statusDealEntry, 0)
 				updates[curCidReceiver.key] = curCidReceiver
+			}
+
+			// not a deal and not for queueing ( failed pin or whatever )
+			// no dealinfo to add
+			if curCidReceiver.metadata.Queued == 0 && curDeal.Status == nil {
+				continue
 			}
 
 			lcU := curDeal.LastChanged.Unix()
@@ -232,11 +231,11 @@ var exportStatus = &cli.Command{
 			return err
 		}
 
-		return uploadAndMarkUpdates(cctx, db, updates)
+		return uploadAndMarkUpdates(cctx, db, t0, updates)
 	},
 }
 
-func uploadAndMarkUpdates(cctx *cli.Context, db *pgxpool.Pool, updates map[string]*statusUpdate) error {
+func uploadAndMarkUpdates(cctx *cli.Context, db *pgxpool.Pool, updStartTime time.Time, updates map[string]*statusUpdate) error {
 
 	toUpd := make(cloudflare.WorkersKVBulkWriteRequest, 0, len(updates))
 	updatedCids := make([]string, 0, len(updates))
@@ -286,7 +285,8 @@ func uploadAndMarkUpdates(cctx *cli.Context, db *pgxpool.Pool, updates map[strin
 
 	_, err = db.Exec(
 		cctx.Context,
-		`UPDATE cargo.dags SET entry_last_exported = NOW() WHERE cid_v1 = ANY ( $1 )`,
+		`UPDATE cargo.dags SET entry_last_exported = $1 WHERE cid_v1 = ANY ( $2 )`,
+		updStartTime,
 		updatedCids,
 	)
 	if err != nil {

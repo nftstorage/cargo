@@ -128,11 +128,6 @@ CREATE TABLE IF NOT EXISTS cargo.batch_entries (
   CONSTRAINT singleton_batch_entry UNIQUE ( cid_v1, batch_cid )
 );
 CREATE INDEX IF NOT EXISTS batch_entries_batch_cid ON cargo.batch_entries ( batch_cid );
-CREATE TRIGGER trigger_dag_update_on_related_batch_entries
-  AFTER INSERT OR UPDATE OR DELETE ON cargo.batch_entries
-  FOR EACH ROW
-  EXECUTE PROCEDURE cargo.update_parent_dag_timestamp()
-;
 
 CREATE TABLE IF NOT EXISTS cargo.providers (
   provider TEXT NOT NULL UNIQUE,
@@ -166,7 +161,7 @@ CREATE TRIGGER trigger_deal_updated
   EXECUTE PROCEDURE cargo.update_entry_timestamp()
 ;
 CREATE TRIGGER trigger_dag_update_on_related_deal_change
-  AFTER UPDATE OF entry_last_updated ON cargo.deals
+  AFTER UPDATE ON cargo.deals
   FOR EACH ROW
   WHEN (OLD.entry_last_updated != NEW.entry_last_updated)
   EXECUTE PROCEDURE cargo.update_batch_dags_timestamps()
@@ -184,6 +179,8 @@ CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
     FROM cargo.dag_sources ds, cargo.dags d
   WHERE
     ds.cid_v1 = d.cid_v1
+      AND
+    ds.entry_removed IS NULL
       AND
     d.size_actual IS NULL
       AND
@@ -226,18 +223,54 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
       SELECT
         ds.source,
         COUNT(*) AS count_total,
-        SUM(size_actual) AS bytes_total,
+        SUM(d.size_actual) AS bytes_total,
         MIN(ds.entry_created) AS oldest_dag,
         MAX(ds.entry_created) AS newest_dag
       FROM cargo.dag_sources ds
-      JOIN cargo.dags USING ( cid_v1 )
+      JOIN cargo.dags d USING ( cid_v1 )
       WHERE
+        d.size_actual IS NOT NULL AND d.size_actual <= 34000000000
+          AND
         ds.entry_removed IS NULL
           AND
         -- exclude anything that is a member of something else from the same source
         NOT EXISTS (
-          SELECT 42 FROM cargo.refs r, cargo.dag_sources dsr
-          WHERE r.ref_v1 = ds.cid_v1 AND r.cid_v1 = dsr.cid_v1 AND dsr.source = ds.source
+          SELECT 42 FROM cargo.refs r, cargo.dag_sources rds
+          WHERE r.ref_v1 = ds.cid_v1 AND r.cid_v1 = rds.cid_v1 AND rds.source = ds.source
+        )
+      GROUP BY source
+    ),
+    summary_unaggregated AS (
+      SELECT
+        ds.source,
+        COUNT(*) AS count_total,
+        SUM(d.size_actual) AS bytes_total,
+        MIN(ds.entry_created) AS oldest_dag,
+        MAX(ds.entry_created) AS newest_dag
+      FROM cargo.dag_sources ds
+      JOIN cargo.dags d USING ( cid_v1 )
+      LEFT JOIN cargo.batch_entries be USING ( cid_v1 )
+      WHERE
+        d.size_actual IS NOT NULL AND d.size_actual <= 34000000000
+          AND
+        ds.entry_removed IS NULL
+          AND
+        be.cid_v1 IS NULL
+          AND
+        -- exclude anything that is a member of something else unaggregated from the same source
+        NOT EXISTS (
+          SELECT 42
+            FROM cargo.refs r
+            JOIN cargo.dag_sources rds USING ( cid_v1 )
+            LEFT JOIN cargo.batch_entries rbe USING ( cid_v1 )
+            LEFT JOIN cargo.batches rb
+              ON rbe.batch_cid = rb.batch_cid AND rb.metadata->>'RecordType' = 'DagAggregate UnixFS'
+          WHERE
+            r.ref_v1 = ds.cid_v1
+              AND
+            rds.source = ds.source
+              AND
+            rb.batch_cid IS NULL
         )
       GROUP BY source
     )
@@ -246,14 +279,17 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
     s.details ->> 'nickname' AS source_nick,
     s.details ->> 'name' AS source_name,
     s.details ->> 'email' AS source_email,
-    s.details ->> 'dcweight' AS source_weight,
-    su.count_total,
-    su.oldest_dag,
-    su.newest_dag,
-    pg_size_pretty(su.bytes_total) AS dags_total
+    s.details ->> 'dcweight' AS weight,
+    su.count_total AS count_total,
+    unagg.count_total AS count_unaggregated,
+    unagg.oldest_dag AS oldest_unaggregated,
+    unagg.newest_dag AS newest_unaggregated,
+    pg_size_pretty(su.bytes_total) AS size_total,
+    pg_size_pretty(unagg.bytes_total) AS size_unaggregated
   FROM summary su
   JOIN cargo.sources s USING (source)
-  ORDER BY su.bytes_total DESC NULLS LAST, su.source
+  LEFT JOIN summary_unaggregated unagg USING ( source )
+  ORDER BY weight DESC NULLS FIRST, unagg.bytes_total DESC NULLS LAST, su.source
 );
 
 CREATE OR REPLACE
@@ -276,9 +312,16 @@ AS $$
       AND
     NOT EXISTS ( SELECT 42 FROM cargo.batch_entries be WHERE ds.cid_v1 = be.cid_v1 )
       AND
-    -- exclude anything that is a member of something else from the same source
+    -- exclude anything that is a member of something else unaggregated (from any source)
     NOT EXISTS (
-      SELECT 42 FROM cargo.refs r, cargo.dag_sources dsr
-      WHERE r.ref_v1 = ds.cid_v1 AND r.cid_v1 = dsr.cid_v1 AND dsr.source = ds.source
+      SELECT 42
+        FROM cargo.refs r
+        LEFT JOIN cargo.batch_entries rbe USING ( cid_v1 )
+        LEFT JOIN cargo.batches rb
+          ON rbe.batch_cid = rb.batch_cid AND rb.metadata->>'RecordType' = 'DagAggregate UnixFS'
+      WHERE
+        r.ref_v1 = ds.cid_v1
+          AND
+        rb.batch_cid IS NULL
     )
 $$;

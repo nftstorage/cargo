@@ -88,6 +88,25 @@ var getNewNftCids = &cli.Command{
 			return err
 		}
 
+		ownAggregates := make(map[string]struct{}, 1<<10)
+		rows, err = db.Query(
+			ctx,
+			`SELECT batch_cid FROM cargo.batches`,
+		)
+		if err != nil {
+			return err
+		}
+		var agg string
+		for rows.Next() {
+			if err = rows.Scan(&agg); err != nil {
+				return err
+			}
+			ownAggregates[agg] = struct{}{}
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
 		log.Infof("loaded %d already-known sources and %d cid+source pairs", len(knownSources), len(initiallyInDb))
 
 		var lastPct, seen, new, newSources, removed int
@@ -125,6 +144,11 @@ var getNewNftCids = &cli.Command{
 			keyParts := nftKeyparse.FindStringSubmatch(r.Name)
 			if len(keyParts) != 3 {
 				return xerrors.Errorf("Unable to parse key '%s': %d matches found", r.Name, len(keyParts)-1)
+			}
+
+			if _, ourOwn := ownAggregates[keyParts[2]]; ourOwn {
+				// someone is pulling our leg
+				continue
 			}
 
 			source := keyParts[1]
