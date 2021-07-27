@@ -19,7 +19,7 @@ type statusDealEntry struct {
 	Status             *string    `json:"status"`
 	LastChanged        *time.Time `json:"lastChanged"`
 	LastChangedUnix    *int64     `json:"lastChangedUnix"`
-	BatchRootCid       *string    `json:"batchRootCid,omitempty"`
+	AggregateRootCid   *string    `json:"batchRootCid,omitempty"`
 	PieceCid           *string    `json:"pieceCid,omitempty"`
 	Network            *string    `json:"network,omitempty"`
 	Miner              *string    `json:"miner,omitempty"`
@@ -50,7 +50,7 @@ type statusUpdate struct {
 var lastPct, countPending, countUpdated int
 
 var exportStatus = &cli.Command{
-	Usage: "Export status of individual NFTs to external databases",
+	Usage: "Export status of individual DAGs to external databases",
 	Name:  "export-status",
 	Flags: []cli.Flag{},
 	Action: func(cctx *cli.Context) error {
@@ -68,13 +68,22 @@ var exportStatus = &cli.Command{
 			return err
 		}
 
-		toUpdateCond := `
-			d.size_actual IS NOT NULL
-				AND
-			( d.entry_last_exported IS NULL OR d.entry_last_updated > d.entry_last_exported )
-		`
-
-		err = db.QueryRow(ctx, `SELECT COUNT(*) FROM cargo.dag_sources ds JOIN cargo.dags d USING ( cid_v1 ) WHERE `+toUpdateCond).Scan(&countPending)
+		err = db.QueryRow(
+			ctx,
+			`
+			SELECT COUNT( DISTINCT ( ds.cid_original ) )
+				FROM cargo.dag_sources ds
+				JOIN cargo.dags d USING ( cid_v1 )
+				JOIN cargo.sources s USING ( srcid )
+			WHERE
+				s.project = $1
+					AND
+				d.size_actual IS NOT NULL
+					AND
+				( ds.entry_last_exported IS NULL OR d.entry_last_updated > ds.entry_last_exported )
+			`,
+			projectNftStorage,
+		).Scan(&countPending)
 		if err != nil {
 			return err
 		}
@@ -86,49 +95,51 @@ var exportStatus = &cli.Command{
 
 		rows, err := db.Query(
 			ctx,
-			fmt.Sprintf(
-				`
-				SELECT
-						ds.cid_original,
-						ds.cid_v1,
-						(
-							CASE WHEN
-								d.size_actual IS NULL
-									OR
-								ds.entry_removed IS NOT NULL
-									OR
-								COALESCE( ( s.details ->> 'dcweight' )::INTEGER, 0 ) < 0
-									OR
-								EXISTS (
-									SELECT 42 FROM cargo.batch_entries be, cargo.deals de
-									WHERE ds.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status IN ( 'active' )
-								)
-							THEN 0 ELSE 1 END
-						) AS queued,
-						( SELECT COUNT(de.deal_id) FROM cargo.batch_entries be, cargo.deals de WHERE ds.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status = 'published' ) AS published,
-						( SELECT COUNT(de.deal_id) FROM cargo.batch_entries be, cargo.deals de WHERE ds.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status = 'active' ) AS active,
-						( SELECT COUNT(de.deal_id) FROM cargo.batch_entries be, cargo.deals de WHERE ds.cid_v1 = be.cid_v1 AND be.batch_cid = de.batch_cid AND de.status = 'terminated' ) AS terminated,
-						de.status,
-						COALESCE( de.entry_last_updated, d.entry_last_updated ),
-						be.batch_cid,
-						b.piece_cid,
-						de.provider,
-						de.deal_id,
-						be.datamodel_selector,
-						de.epoch_start,
-						de.epoch_end
-					FROM cargo.dag_sources ds
-					JOIN cargo.sources s USING ( source )
-					JOIN cargo.dags d USING ( cid_v1 )
-					LEFT JOIN cargo.batch_entries be USING ( cid_v1 )
-					LEFT JOIN cargo.batches b USING ( batch_cid )
-					LEFT JOIN cargo.deals de USING ( batch_cid )
-				WHERE %s
-				ORDER BY ds.cid_original -- order is critical to form bulk-update batches
-				`,
-
-				toUpdateCond,
-			),
+			`
+			SELECT
+					ds.cid_original,
+					ds.cid_v1,
+					(
+						CASE WHEN
+							d.size_actual IS NULL
+								OR
+							ds.entry_removed IS NOT NULL
+								OR
+							COALESCE( ( s.details ->> 'dcweight' )::INTEGER, 0 ) < 0
+								OR
+							EXISTS (
+								SELECT 42 FROM cargo.aggregate_entries ae, cargo.deals de
+								WHERE ds.cid_v1 = ae.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status IN ( 'active' )
+							)
+						THEN 0 ELSE 1 END
+					) AS queued,
+					( SELECT COUNT(de.deal_id) FROM cargo.aggregate_entries ae, cargo.deals de WHERE ds.cid_v1 = ae.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status = 'published' ) AS published,
+					( SELECT COUNT(de.deal_id) FROM cargo.aggregate_entries ae, cargo.deals de WHERE ds.cid_v1 = ae.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status = 'active' ) AS active,
+					( SELECT COUNT(de.deal_id) FROM cargo.aggregate_entries ae, cargo.deals de WHERE ds.cid_v1 = ae.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status = 'terminated' ) AS terminated,
+					de.status,
+					COALESCE( de.entry_last_updated, d.entry_last_updated ),
+					ae.aggregate_cid,
+					a.piece_cid,
+					de.provider,
+					de.deal_id,
+					ae.datamodel_selector,
+					de.epoch_start,
+					de.epoch_end
+				FROM cargo.dag_sources ds
+				JOIN cargo.sources s USING ( srcid )
+				JOIN cargo.dags d USING ( cid_v1 )
+				LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
+				LEFT JOIN cargo.aggregates a USING ( aggregate_cid )
+				LEFT JOIN cargo.deals de USING ( aggregate_cid )
+			WHERE
+				s.project = $1
+					AND
+				d.size_actual IS NOT NULL
+					AND
+				( ds.entry_last_exported IS NULL OR d.entry_last_updated > ds.entry_last_exported )
+			ORDER BY ds.cid_original -- order is critical to form bulk-update batches
+			`,
+			projectNftStorage,
 		)
 		if err != nil {
 			return err
@@ -152,7 +163,7 @@ var exportStatus = &cli.Command{
 				&curCidReceiver.metadata.Terminated,
 				&curDeal.Status,
 				&curDeal.LastChanged,
-				&curDeal.BatchRootCid,
+				&curDeal.AggregateRootCid,
 				&curDeal.PieceCid,
 				&curDeal.Miner,
 				&curDeal.ChainDealID,
@@ -285,9 +296,19 @@ func uploadAndMarkUpdates(cctx *cli.Context, db *pgxpool.Pool, updStartTime time
 
 	_, err = db.Exec(
 		cctx.Context,
-		`UPDATE cargo.dags SET entry_last_exported = $1 WHERE cid_v1 = ANY ( $2 )`,
+		`UPDATE cargo.dag_sources ds
+			SET entry_last_exported = $1
+		FROM cargo.sources s
+		WHERE
+			ds.srcid = s.srcid
+				AND
+			ds.cid_v1 = ANY ( $2 )
+				AND
+			s.project = $3
+		`,
 		updStartTime,
 		updatedCids,
+		projectNftStorage,
 	)
 	if err != nil {
 		return err

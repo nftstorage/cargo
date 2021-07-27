@@ -3,10 +3,20 @@ package main
 import (
 	"context"
 
+	"github.com/filecoin-project/go-address"
+	"github.com/filecoin-project/go-state-types/abi"
+	"github.com/filecoin-project/go-state-types/big"
 	"github.com/ipfs/go-cid"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
 )
+
+type filClient struct {
+	robust           address.Address
+	dataCapRemaining *abi.StoragePower
+}
+
+var clientLookup = make(map[address.Address]filClient, 32)
 
 var pieceCount, dealCount int
 var trackDeals = &cli.Command{
@@ -25,7 +35,7 @@ var trackDeals = &cli.Command{
 		knownPieceCIDs := make(map[cid.Cid]cid.Cid)
 		rows, err := db.Query(
 			ctx,
-			`SELECT piece_cid, batch_cid FROM cargo.batches WHERE piece_cid IS NOT NULL`,
+			`SELECT piece_cid, aggregate_cid FROM cargo.aggregates WHERE piece_cid IS NOT NULL`,
 		)
 		if err != nil {
 			return err
@@ -81,7 +91,7 @@ var trackDeals = &cli.Command{
 		log.Infof("retrieved %d active deal records", len(deals))
 
 		for dealID, d := range deals {
-			batchCid, known := knownPieceCIDs[d.Proposal.PieceCID]
+			aggCid, known := knownPieceCIDs[d.Proposal.PieceCID]
 			if !known {
 				continue
 			}
@@ -98,6 +108,40 @@ var trackDeals = &cli.Command{
 			)
 			if err != nil {
 				return err
+			}
+
+			if _, found := clientLookup[d.Proposal.Client]; !found {
+				var fc filClient
+
+				fc.robust, err = api.StateAccountKey(ctx, d.Proposal.Client, lts.Key())
+				if err != nil {
+					return err
+				}
+
+				fc.dataCapRemaining, err = api.StateVerifiedClientStatus(ctx, fc.robust, lts.Key())
+				if err != nil {
+					return err
+				}
+				if fc.dataCapRemaining == nil {
+					z := big.NewInt(0)
+					fc.dataCapRemaining = &z
+				}
+
+				_, err = db.Exec(
+					ctx,
+					`
+					INSERT INTO cargo.clients ( client, filp_available ) VALUES ( $1, $2 )
+						ON CONFLICT ( client ) DO UPDATE SET
+							filp_available = EXCLUDED.filp_available
+					`,
+					fc.robust.String(),
+					fc.dataCapRemaining.Int64(),
+				)
+				if err != nil {
+					return err
+				}
+
+				clientLookup[d.Proposal.Client] = fc
 			}
 
 			epochStart := new(int64)
@@ -119,14 +163,15 @@ var trackDeals = &cli.Command{
 			_, err = db.Exec(
 				ctx,
 				`
-				INSERT INTO cargo.deals ( batch_cid, provider, status, deal_id, epoch_start, epoch_end )
-					VALUES ( $1, $2, $3, $4, $5, $6 )
+				INSERT INTO cargo.deals ( aggregate_cid, client, provider, status, deal_id, epoch_start, epoch_end )
+					VALUES ( $1, $2, $3, $4, $5, $6, $7 )
 				ON CONFLICT ( deal_id ) DO UPDATE SET
 					status = EXCLUDED.status,
 					epoch_start = EXCLUDED.epoch_start,
 					epoch_end = EXCLUDED.epoch_end
 				`,
-				batchCid.String(),
+				aggCid.String(),
+				clientLookup[d.Proposal.Client].robust.String(),
 				d.Proposal.Provider.String(),
 				status,
 				dealID,

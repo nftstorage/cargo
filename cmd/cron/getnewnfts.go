@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +14,9 @@ import (
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
 )
+
+// nft.storage
+const projectNftStorage = 2
 
 var nftKeyparse = regexp.MustCompile(`^\s*(.+):([^:\s]+)\s*$`)
 
@@ -50,20 +52,22 @@ var getNewNftCids = &cli.Command{
 		resCh := make(chan cloudflare.StorageKey, bufPresize)
 		go listAllNftKeys(ctx, api, nftKvID, resCh, errCh)
 
-		knownSources := make(map[string]struct{}, bufPresize)
+		knownSources := make(map[string]int64, bufPresize)
 		rows, err := db.Query(
 			ctx,
-			`SELECT source FROM cargo.sources WHERE details IS NOT NULL`,
+			`SELECT srcid, source FROM cargo.sources WHERE project = $1 AND details IS NOT NULL`,
+			projectNftStorage,
 		)
 		if err != nil {
 			return err
 		}
+		var srcid int64
 		var src string
 		for rows.Next() {
-			if err = rows.Scan(&src); err != nil {
+			if err = rows.Scan(&srcid, &src); err != nil {
 				return err
 			}
-			knownSources[src] = struct{}{}
+			knownSources[src] = srcid
 		}
 		if err := rows.Err(); err != nil {
 			return err
@@ -72,7 +76,13 @@ var getNewNftCids = &cli.Command{
 		initiallyInDb := make(map[[2]string]struct{}, bufPresize)
 		rows, err = db.Query(
 			ctx,
-			`SELECT cid_original, source FROM cargo.dag_sources WHERE entry_removed IS NULL`,
+			`SELECT ds.cid_original, s.source
+				FROM cargo.dag_sources ds
+				JOIN cargo.sources s
+					ON ( ds.srcid = s.srcid AND s.project = $1 )
+			WHERE ds.entry_removed IS NULL
+			`,
+			projectNftStorage,
 		)
 		if err != nil {
 			return err
@@ -91,7 +101,7 @@ var getNewNftCids = &cli.Command{
 		ownAggregates := make(map[string]struct{}, 1<<10)
 		rows, err = db.Query(
 			ctx,
-			`SELECT batch_cid FROM cargo.batches`,
+			`SELECT aggregate_cid FROM cargo.aggregates`,
 		)
 		if err != nil {
 			return err
@@ -167,8 +177,7 @@ var getNewNftCids = &cli.Command{
 
 			cidNormStr := cidv1(cidOriginal).String()
 
-			var sizeClaimed *int64
-			var entryCreated *time.Time
+			entryCreated := time.Now()
 
 			if r.Metadata != nil {
 				m, castOk := r.Metadata.(map[string]interface{})
@@ -181,27 +190,17 @@ var getNewNftCids = &cli.Command{
 					if err != nil {
 						return xerrors.Errorf("unexpected created time '%s'", ctime)
 					}
-					entryCreated = &t
-				}
-
-				if size, sizeFound := m["size"]; sizeFound && size != nil {
-					s, err := strconv.ParseFloat(fmt.Sprintf("%v", size), 64)
-					if err != nil {
-						return xerrors.Errorf("unexpected claimed size '%s'", size)
-					}
-					si := int64(s)
-					sizeClaimed = &si
+					entryCreated = t
 				}
 			}
 
 			_, err = db.Exec(
 				ctx,
 				`
-				INSERT INTO cargo.dags ( cid_v1, size_claimed, entry_created ) VALUES ( $1, $2, COALESCE( $3, NOW() ) )
+				INSERT INTO cargo.dags ( cid_v1, entry_created ) VALUES ( $1, $2 )
 					ON CONFLICT DO NOTHING
 				`,
 				cidNormStr,
-				sizeClaimed,
 				entryCreated,
 			)
 			if err != nil {
@@ -217,31 +216,35 @@ var getNewNftCids = &cli.Command{
 					newSources++
 				}
 
-				_, err = db.Exec(
+				var srcid int64
+				err = db.QueryRow(
 					ctx,
 					`
-					INSERT INTO cargo.sources ( source, details ) VALUES ( $1, $2 )
-						ON CONFLICT ( source ) DO UPDATE SET details = COALESCE( sources.details, EXCLUDED.details ) -- no overwrites
+					INSERT INTO cargo.sources ( project, source, entry_created, details ) VALUES ( $1, $2, $3, $4 )
+						ON CONFLICT ( project, source ) DO UPDATE SET details = COALESCE( sources.details, EXCLUDED.details ) -- no overwrites
+					RETURNING srcid
 					`,
+					projectNftStorage,
 					source,
+					entryCreated,
 					sourceDetails,
-				)
+				).Scan(&srcid)
 				if err != nil {
 					return err
 				}
 
-				knownSources[source] = struct{}{}
+				knownSources[source] = srcid
 			}
 
 			_, err = db.Exec(
 				ctx,
 				`
-				INSERT INTO cargo.dag_sources ( cid_v1, cid_original, source, entry_created ) VALUES ( $1, $2, $3, COALESCE( $4, NOW() ) )
-					ON CONFLICT ON CONSTRAINT singleton_source_record DO UPDATE SET entry_removed = NULL
+				INSERT INTO cargo.dag_sources ( cid_v1, cid_original, srcid, entry_created ) VALUES ( $1, $2, $3, $4 )
+					ON CONFLICT ON CONSTRAINT singleton_dag_source_record DO UPDATE SET entry_removed = NULL
 				`,
 				cidNormStr,
 				cidOriginal.String(),
-				source,
+				knownSources[source],
 				entryCreated,
 			)
 			if err != nil {
@@ -259,9 +262,19 @@ var getNewNftCids = &cli.Command{
 				if _, err = db.Exec(
 					ctx,
 					`
-					UPDATE cargo.dag_sources SET entry_removed = NOW() WHERE cid_original = $1 AND source = $2
+					UPDATE cargo.dag_sources ds
+						SET entry_removed = NOW()
+					FROM cargo.sources s
+					WHERE
+						ds.srcid = s.srcid
+							AND
+						ds.cid_original = $1
+							AND
+						s.project = $2
+							AND
+						s.source = $3
 					`,
-					k[0], k[1],
+					k[0], projectNftStorage, k[1],
 				); err != nil {
 					return err
 				}

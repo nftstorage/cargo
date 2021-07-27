@@ -47,13 +47,13 @@ var aggregateDags = &cli.Command{
 					AND
 				NOT EXISTS (
 					SELECT 42
-						FROM cargo.batch_entries be, cargo.batches b
+						FROM cargo.aggregate_entries ae, cargo.aggregates a
 					WHERE
-						be.cid_v1 = d.cid_v1
+						ae.cid_v1 = d.cid_v1
 							AND
-						be.batch_cid = b.batch_cid
+						ae.aggregate_cid = a.aggregate_cid
 							AND
-						b.metadata->>'type' = 'DagAggregate UnixFS'
+						a.metadata->>'type' = 'DagAggregate UnixFS'
 				)
 			ORDER BY size_actual DESC
 			`,

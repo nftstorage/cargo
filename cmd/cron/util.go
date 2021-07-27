@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	bufPresize = 128 << 20 // size to the approximate amount of NFTs we track
+	bufPresize = 128 << 20 // size to the approximate amount of DAGs we track
 )
 
 var (

@@ -21,7 +21,7 @@ $SIG{__WARN__} = sigwarn_silencer(qr/collides with an inherited method/);
 
 my $trans = SQL::Translator->new(
     parser        => 'SQL::Translator::Parser::DBIx::Class',
-    parser_args   => { dbic_schema => GraphedSchema->connect('dbi:Pg:db=postgres', 'nft') },
+    parser_args   => { dbic_schema => GraphedSchema->connect('dbi:Pg:service=cargo', 'cargo') },
     producer      => 'GraphViz',
     producer_args => {
         width => 0,

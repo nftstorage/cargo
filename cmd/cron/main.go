@@ -34,18 +34,18 @@ var globalFlags = []cli.Flag{
 		Usage: "Amount of concurrent IPFS API operations",
 		Value: 64,
 	},
-	&cli.StringFlag{
+	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:  "lotus-api",
 		Value: "http://localhost:1234",
-	},
+	}),
 	&cli.UintFlag{
 		Name:  "lotus-lookback-epochs",
 		Value: 10,
 	},
-	&cli.StringFlag{
+	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:  "pg-connstring",
-		Value: "postgres:///postgres?user=nft&password=&host=/var/run/postgresql",
-	},
+		Value: "postgres:///postgres?user=cargo&password=&host=/var/run/postgresql",
+	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "cf-account",
 		DefaultText: "  {{ private, read from config file }}  ",

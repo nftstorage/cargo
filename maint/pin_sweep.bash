@@ -1,19 +1,20 @@
 #!/bin/bash
 
-# get list of pending v1 cids
+# Get list of pending v1 cids
 cids_pending="$(
-  psql -AtF, -U nft postgres <<<"SELECT cid_v1 FROM cargo.dags WHERE size_actual IS NULL AND entry_created BETWEEN (NOW()-'30 days'::INTERVAL) AND (NOW()-'1 hours'::INTERVAL)" \
+  psql -AtF, service=cargo <<<"SELECT cid_v1 FROM cargo.dags WHERE size_actual IS NULL AND entry_created BETWEEN (NOW()-'30 days'::INTERVAL) AND (NOW()-'1 hours'::INTERVAL)" \
   | sort -R
 )"
 
-# Connect to anything claiming to have our stuff
+# Force-connect to first random 8k of anything claiming to have our stuff
 echo "$cids_pending" \
-| xargs -P1024 -n1 timeout 30 $HOME/go-ipfs/cmd/ipfs/ipfs dht findprovs \
+| head -n 8192 \
+| xargs -P 1024 -n1 timeout -k 1 3 $HOME/go-ipfs/cmd/ipfs/ipfs dht findprovs 2>/dev/null \
 | sort -u \
 | sed 's/^/\/p2p\//' \
-| xargs -P 256 -n1 $HOME/go-ipfs/cmd/ipfs/ipfs swarm connect &>/dev/null
+| xargs -P 256 -n1 timeout 5 $HOME/go-ipfs/cmd/ipfs/ipfs swarm connect &>/dev/null
 
-# try to gather anything that could have been missed
+# Now try to gather anything that could have been missed
 echo "$cids_pending" \
-| xargs -P1024 -n1 $HOME/go-ipfs/cmd/ipfs/ipfs pin add 2>/dev/null \
+| xargs -P 1024 -n1 $HOME/go-ipfs/cmd/ipfs/ipfs pin add 2>/dev/null \
 | grep 'pinned'

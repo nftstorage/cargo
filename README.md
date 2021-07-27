@@ -1,7 +1,7 @@
 dagcargo
 =======================
 
-WIP of backoffice tooling for nft-storage and similar. Do not pull go libs from
+WIP of backoffice tooling for web3.storage and similar. Do not pull go libs from
 this repository - the name will **not** survive.
 
 ## Lead Maintainer
