@@ -43,6 +43,7 @@ const (
 
 var targetMinSizeSoft, targetMinSizeHard uint64
 var concurrentExports, settleDelayHours, forceAgeHours uint
+var captureAggregateCandidatesSnapshot bool
 var carExportDir string
 
 type pendingDag struct {
@@ -70,6 +71,12 @@ var aggregateDags = &cli.Command{
 	Usage: "Aggregate available dags if any",
 	Name:  "aggregate-dags",
 	Flags: []cli.Flag{
+		&cli.PathFlag{
+			Required:    true,
+			Name:        "export-dir",
+			Usage:       "A pre-existing directory with sufficient space to export .car files into",
+			Destination: &carExportDir,
+		},
 		&cli.Uint64Flag{
 			Name:        "min-size-soft",
 			Usage:       "The included payload should not be smaller than this",
@@ -100,11 +107,10 @@ var aggregateDags = &cli.Command{
 			Value:       6,
 			Destination: &forceAgeHours,
 		},
-		&cli.PathFlag{
-			Required:    true,
-			Name:        "export-dir",
-			Usage:       "A pre-existing directory with sufficient space to export .car files into",
-			Destination: &carExportDir,
+		&cli.BoolFlag{
+			Name:        "snapshot-aggregate-candidates",
+			Usage:       "(debug) capture a materialized view of the available candidate list",
+			Destination: &captureAggregateCandidatesSnapshot,
 		},
 	},
 	Action: func(cctx *cli.Context) error {
@@ -130,8 +136,7 @@ var aggregateDags = &cli.Command{
 		}
 		defer db.Close()
 
-		rows, err := db.Query(
-			ctx,
+		masterListSQL := fmt.Sprintf(
 			`
 			WITH available_sources AS (
 				SELECT
@@ -142,7 +147,7 @@ var aggregateDags = &cli.Command{
 					JOIN cargo.sources s USING ( srcid )
 					JOIN cargo.dags d USING ( cid_v1 )
 				WHERE
-					d.size_actual IS NOT NULL AND d.size_actual <= $1 -- only pinned entries (FIXME for now do not deal with oversizes/that comes later)
+					d.size_actual IS NOT NULL AND d.size_actual <= %[1]d -- only pinned entries (FIXME for now do not deal with oversizes/that comes later)
 						AND
 					COALESCE( ( s.details ->> 'dcweight' )::INTEGER, 999 ) >= 0
 						AND
@@ -156,7 +161,7 @@ var aggregateDags = &cli.Command{
 								AND
 							ae.aggregate_cid = a.aggregate_cid
 								AND
-							a.metadata->>'RecordType' = $2
+							a.metadata->>'RecordType' = '%[2]s'
 					)
 				GROUP BY ds.srcid, dcweight
 			)
@@ -173,7 +178,7 @@ var aggregateDags = &cli.Command{
 				ds.entry_removed IS NULL
 					AND
 				-- only pinned entries (FIXME for now do not deal with oversizes/that comes later)
-				d.size_actual IS NOT NULL AND d.size_actual <= $1
+				d.size_actual IS NOT NULL AND d.size_actual <= %[1]d
 					AND
 				-- not yet aggregated
 				NOT EXISTS (
@@ -184,7 +189,7 @@ var aggregateDags = &cli.Command{
 							AND
 						ae.aggregate_cid = a.aggregate_cid
 							AND
-						a.metadata->>'RecordType' = $2
+						a.metadata->>'RecordType' =  '%[2]s'
 				)
 					AND
 				-- exclude members of something else *that is subject to aggregation*
@@ -196,7 +201,7 @@ var aggregateDags = &cli.Command{
 						LEFT JOIN cargo.aggregate_entries rae
 							ON r.cid_v1 = rae.cid_v1
 						LEFT JOIN cargo.aggregates ra
-							ON rae.aggregate_cid = ra.aggregate_cid AND ra.metadata->>'RecordType' = $2
+							ON rae.aggregate_cid = ra.aggregate_cid AND ra.metadata->>'RecordType' = '%[2]s'
 					WHERE
 						r.ref_v1 = d.cid_v1
 							AND
@@ -205,7 +210,7 @@ var aggregateDags = &cli.Command{
 					AND
 				-- give enough time for metadata/containing dags to trickle in too, allowing for outages
 				(
-					ds.entry_created < ( NOW() - $3::INTERVAL )
+					ds.entry_created < ( NOW() - '%[3]s'::INTERVAL )
 						OR
 					EXISTS (
 						SELECT 42
@@ -217,7 +222,7 @@ var aggregateDags = &cli.Command{
 								AND
 							ds.srcid = sds.srcid
 								AND
-							sds.entry_created < ( NOW() - $3::INTERVAL )
+							sds.entry_created < ( NOW() - '%[3]s'::INTERVAL )
 					)
 				)
 			ORDER BY s.dcweight DESC, s.oldest_unaggregated, s.srcid, d.size_actual DESC, d.cid_v1
@@ -226,6 +231,18 @@ var aggregateDags = &cli.Command{
 			aggregateType,
 			fmt.Sprintf("%d hours", settleDelayHours),
 		)
+
+		var rows pgx.Rows
+		if !captureAggregateCandidatesSnapshot {
+			rows, err = db.Query(ctx, masterListSQL)
+		} else {
+			mvName := `cargo.aggregate_candidates_snapshot__` + time.Now().Format("2006_01_02__15_04_05")
+			_, err = db.Exec(ctx, fmt.Sprintf("CREATE MATERIALIZED VIEW %s AS\n%s", mvName, masterListSQL))
+			if err != nil {
+				return err
+			}
+			rows, err = db.Query(ctx, `SELECT * FROM `+mvName)
+		}
 		if err != nil {
 			return err
 		}
@@ -274,7 +291,6 @@ var aggregateDags = &cli.Command{
 		defer func() {
 			log.Infow("summary",
 				"initialCandidates", len(statsDags),
-				"leftForNextInvocation", len(toAggRemaining)+len(lastRoundAgg),
 				"uniqueCandidateSources", len(statsSources),
 				"aggregatesAssembled", *stats.newAggregatesTotal,
 				"dagsAggregatedStandalone", *stats.dagsAggregatedStandalone,
@@ -550,12 +566,13 @@ var reifyRoundsCount int
 
 func reifyAggregateCars(cctx *cli.Context, db *pgxpool.Pool, stats runningTotals, aggBundles [][]dagaggregator.AggregateDagEntry) ([]aggregateResult, error) {
 
-	log.Infof("ROUND %d: reifying %s aggregates as car files", reifyRoundsCount, humanize.Comma(int64(len(aggBundles))))
 	reifyRoundsCount++
 
 	if len(aggBundles) == 0 {
 		return nil, nil
 	}
+
+	log.Infof("ROUND %d: reifying %s aggregates as car files", reifyRoundsCount-1, humanize.Comma(int64(len(aggBundles))))
 
 	var ctxCloser func()
 	oldCtx := cctx.Context
