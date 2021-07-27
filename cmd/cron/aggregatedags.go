@@ -37,10 +37,12 @@ import (
 const (
 	targetMaxSize = uint64(34_000_000_000) // bytes of payload *before* .car overhead
 	aggregateType = "DagAggregate UnixFS"
+
+	unixReadable = os.FileMode(0644)
 )
 
 var targetMinSizeSoft, targetMinSizeHard uint64
-var concurrentExports, settleDelayHours uint
+var concurrentExports, settleDelayHours, forceAgeHours uint
 var carExportDir string
 
 type pendingDag struct {
@@ -71,19 +73,19 @@ var aggregateDags = &cli.Command{
 		&cli.Uint64Flag{
 			Name:        "min-size-soft",
 			Usage:       "The included payload should not be smaller than this",
-			Value:       30_000_000_000,
+			Value:       24_000_000_000,
 			Destination: &targetMinSizeSoft,
 		},
 		&cli.Uint64Flag{
 			Name:        "min-size-hard",
 			Usage:       "The resulting car file CAN NOT be smaller than this",
-			Value:       24_000_000_000,
+			Value:       (16<<30)/128*127 + 1,
 			Destination: &targetMinSizeHard,
 		},
 		&cli.UintFlag{
 			Name:        "max-concurrent-exports",
 			Usage:       "Maximum amount of exports that can run at the same time (IO-bound)",
-			Value:       4,
+			Value:       8,
 			Destination: &concurrentExports,
 		},
 		&cli.UintFlag{
@@ -91,6 +93,12 @@ var aggregateDags = &cli.Command{
 			Usage:       "Amount of hours before considering an entry for inclusion",
 			Value:       2,
 			Destination: &settleDelayHours,
+		},
+		&cli.UintFlag{
+			Name:        "force-aggregation-hours",
+			Usage:       "When the pending set includes a CID that many hours old, mix in preexisting aggregates to make a new one",
+			Value:       6,
+			Destination: &forceAgeHours,
 		},
 		&cli.PathFlag{
 			Required:    true,
@@ -120,6 +128,7 @@ var aggregateDags = &cli.Command{
 		if err != nil {
 			return err
 		}
+		defer db.Close()
 
 		rows, err := db.Query(
 			ctx,
@@ -226,6 +235,8 @@ var aggregateDags = &cli.Command{
 		toAggRemaining := make([]pendingDag, 0, 256<<10)
 
 		var initialBytes uint64
+		var forceTimeboxedAggregation bool
+		forceCutoff := time.Now().Add(-1 * time.Hour * time.Duration(forceAgeHours))
 		for rows.Next() {
 			var pending pendingDag
 			var cidStr string
@@ -239,9 +250,11 @@ var aggregateDags = &cli.Command{
 				return err
 			}
 
+			forceTimeboxedAggregation = forceTimeboxedAggregation || (pending.firstSeen.Before(forceCutoff))
+
 			statsSources[pending.srcid] = struct{}{}
 			if _, existing := statsDags[pending.aggentry.RootCid.String()]; existing {
-				continue // register first occurence of CID only, note: we record all sources on line above
+				continue // register first occurrence of CID only, note: we record all sources on line above
 			}
 
 			statsDags[pending.aggentry.RootCid.String()] = struct{}{}
@@ -320,7 +333,8 @@ var aggregateDags = &cli.Command{
 			}
 
 			// we can't find enough to make it worthwhile: close shop until next time
-			if runBytes < targetMinSizeSoft {
+			if runBytes < targetMinSizeHard ||
+				(!forceTimeboxedAggregation && runBytes < targetMinSizeSoft) {
 				// when we break here, curRoundAgg could contain some pre-made parts
 				// we add that count to the "remaining" stats in the defer higher up
 				break
@@ -443,8 +457,92 @@ var aggregateDags = &cli.Command{
 				undersizedInvalidCars = append(undersizedInvalidCars, newInvalidCars...)
 			}
 		}
+		// we did something OR we are not under sufficient pressure OR nothing to do: enough for this run
+		if *stats.newAggregatesTotal > 0 || !forceTimeboxedAggregation || len(undersizedInvalidCars) == 0 {
+			return nil
+		}
 
-		return nil
+		//
+		// rehydration step
+		// If we did not manage to do anything at all, and we are under pressure,
+		// just select the least-replicated content and mix it with whatever is
+		// available. Ugly but meh...
+		// ( at this stage we are guaranteed to be less-than-hard-minimum-undeduped )
+		if len(undersizedInvalidCars) > 1 {
+			return xerrors.Errorf("impossible: rehydration attempt with more than 1 undersized car")
+		}
+
+		log.Info("forcing time-boxed rehydration from preexisting already-packaged standalone dags")
+
+		rows, err = db.Query(
+			ctx,
+			`
+			WITH dag_candidates AS (
+				SELECT
+						ae.cid_v1,
+						d.size_actual,
+						COUNT(*) AS replica_count
+					FROM cargo.aggregate_entries ae
+					JOIN cargo.dags d
+						ON ae.cid_v1 = d.cid_v1
+					LEFT JOIN cargo.refs r
+						ON ae.cid_v1 = r.ref_v1
+					LEFT JOIN cargo.deals de -- this inflates the replica_count, conflating 0 with 1 ( always 1 ), which is ok
+						ON de.aggregate_cid = ae.aggregate_cid AND de.status != 'terminated'
+				WHERE
+					r.ref_v1 IS NULL -- not part of something else
+						AND
+					d.size_actual < $1 -- don't go with big dags, don't risk it
+				GROUP BY ( ae.cid_v1, d.size_actual )
+				ORDER BY replica_count
+				LIMIT $2
+			)
+			SELECT
+					d.cid_v1,
+					d.size_actual,
+					( SELECT 1+COUNT(*) FROM cargo.refs sr WHERE sr.cid_v1 = d.cid_v1 ) AS node_count
+				FROM dag_candidates d
+			ORDER BY RANDOM()
+			`,
+			targetMinSizeHard,
+			1_000_000,
+		)
+		if err != nil {
+			return err
+		}
+
+		// run through *everything* attempting to pack things as tightly as possible
+		// ( up to 1 mil records )
+		runBytes := undersizedInvalidCars[0].carSize
+		finalDitchAgg := undersizedInvalidCars[0].standaloneEntries
+		for rows.Next() {
+			var ae dagaggregator.AggregateDagEntry
+			var cidStr string
+			if err = rows.Scan(&cidStr, &ae.UniqueBlockCumulativeSize, &ae.UniqueBlockCount); err != nil {
+				return err
+			}
+
+			// will overflow, nope
+			if runBytes+ae.UniqueBlockCumulativeSize > targetMaxSize {
+				continue
+			}
+
+			ae.RootCid, err = cid.Parse(cidStr)
+			if err != nil {
+				return err
+			}
+
+			// good, let's try it!
+			finalDitchAgg = append(finalDitchAgg, ae)
+			runBytes += ae.UniqueBlockCumulativeSize
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		// if it works - it works
+		_, err = reifyAggregateCars(cctx, db, stats, [][]dagaggregator.AggregateDagEntry{finalDitchAgg})
+		return err
 	},
 }
 
@@ -819,6 +917,8 @@ watchdog:
 	if err != nil {
 		return nil, err
 	}
+
+	os.Chmod(fn, unixReadable) // nolint:errcheck
 
 	log.Infof("%s: successfully recorded and reified %s bytes (%.2f%% of projected) at %s",
 		aggLabel,
