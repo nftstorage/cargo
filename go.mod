@@ -21,7 +21,6 @@ require (
 	github.com/ipfs/go-merkledag v0.3.2
 	github.com/jackc/pgx/v4 v4.12.0
 	github.com/mattn/go-isatty v0.0.13
-	github.com/multiformats/go-multicodec v0.2.0
 	github.com/multiformats/go-multihash v0.0.15
 	github.com/urfave/cli/v2 v2.3.0
 	golang.org/x/sys v0.0.0-20210630005230-0f9fa26af87c

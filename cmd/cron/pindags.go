@@ -15,7 +15,6 @@ import (
 	ipfsapi "github.com/ipfs/go-ipfs-api"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/multiformats/go-multicodec"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
 )
@@ -212,30 +211,12 @@ func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total s
 	}()
 
 	err = api.Request("pin/add").Arguments(rootCid.String()).Exec(cctx.Context, nil)
+
+	// If we fail to even pin - just warn and move on without an error ( we didn't write anything to the DB yet )
 	if err != nil {
-
-		ue, castOk := err.(*url.Error)
-		if castOk &&
-			ue.Timeout() &&
-			rootCid.Prefix().Codec == uint64(multicodec.DagPb) &&
-			rootCid.Prefix().MhType == uint64(multicodec.Sha2_256) &&
-			rootCid.Prefix().MhLength == 32 {
-
-			// we timed out, AND we can convert to Cidv0: try that way ( it just might work! )
-			v0 := cid.NewCidV0(rootCid.Hash())
-			log.Warnf("aborted pin of %s due to timeout, retrying pin with %s", rootCid.String(), v0.String())
-
-			eagerAPI := ipfsAPI(cctx)
-			eagerAPI.SetTimeout(time.Second * time.Duration(cctx.Uint("ipfs-api-timeout")) / 5)
-			err = eagerAPI.Request("pin/add").Arguments(v0.String()).Exec(cctx.Context, nil)
-		}
-
-		// If we fail to even pin - just warn and move on without an error ( we didn't write anything to the DB yet )
-		if err != nil {
-			log.Warnf("failure to pin %s: %s", rootCid, err)
-			atomic.AddUint64(total.failed, 1)
-			return nil
-		}
+		log.Warnf("failure to pin %s: %s", rootCid, err)
+		atomic.AddUint64(total.failed, 1)
+		return nil
 	}
 
 	// We got that far: means we have the pin

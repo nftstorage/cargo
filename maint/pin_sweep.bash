@@ -1,9 +1,8 @@
 #!/bin/bash
 
-# get list of pending v1 cids, duplicate v1 as v0 where possible
+# get list of pending v1 cids
 cids_pending="$(
   psql -AtF, -U nft postgres <<<"SELECT cid_v1 FROM cargo.dags WHERE size_actual IS NULL AND entry_created BETWEEN (NOW()-'30 days'::INTERVAL) AND (NOW()-'1 hours'::INTERVAL)" \
-  | tee >( xargs -n1 -P32 $HOME/go-ipfs/cmd/ipfs/ipfs cid format -v0 2>/dev/null ) \
   | sort -R
 )"
 
