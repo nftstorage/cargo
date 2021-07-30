@@ -712,12 +712,14 @@ func aggregateAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, outDir string, toA
 		return nil, xerrors.New("TempFile() did not create an anonymous temp file as expected")
 	}
 
-	api := ipfsAPI(cctx)
-	api.SetTimeout(6 * time.Hour)    // yes, obscene, but plausible
-	doneCh := make(chan struct{}, 2) // this effectively emulates a sync.WaitGroup
-	errCh := make(chan error, 1+2)   // exporter has defers
+	workerCount := 3
 
-	var toUnpinOnError string
+	api := ipfsAPI(cctx)
+	api.SetTimeout(6 * time.Hour)              // yes, obscene, but plausible
+	doneCh := make(chan struct{}, workerCount) // this effectively emulates a sync.WaitGroup
+	errCh := make(chan error, 1+1+2)           // exporter has defers
+
+	toUnpinOnError := res.carRoot.String()
 	defer func() {
 		if toUnpinOnError != "" {
 			msg := fmt.Sprintf("unpinning %s after unsuccessful export", toUnpinOnError)
@@ -730,6 +732,24 @@ func aggregateAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, outDir string, toA
 	}()
 
 	//
+	// async ref-walker ( this speeds up things considerably )
+	// we do not use the results in any way, this just ensures we are pulling things with fanout as fast as we can
+	go func() {
+		defer func() { doneCh <- struct{}{} }()
+
+		resp, err := api.Request("refs").Arguments(res.carRoot.String()).Option("unique", "true").Option("recursive", "true").Option("offline", false).Send(ctx)
+		if err != nil {
+			errCh <- err
+		} else {
+			defer resp.Output.Close() // nolint:errcheck
+			_, err = io.Copy(io.Discard, resp.Output)
+			if err != nil {
+				errCh <- err
+			}
+		}
+	}()
+
+	//
 	// async pinner
 	go func() {
 		defer func() { doneCh <- struct{}{} }()
@@ -737,8 +757,6 @@ func aggregateAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, outDir string, toA
 		err := api.Request("pin/add").Option("offline", false).Arguments(res.carRoot.String()).Exec(ctx, nil)
 		if err != nil {
 			errCh <- err
-		} else {
-			toUnpinOnError = res.carRoot.String()
 		}
 	}()
 
@@ -800,14 +818,13 @@ func aggregateAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, outDir string, toA
 	}()
 
 	var workerError error
-	var doneCount int
 watchdog:
 	for {
 		select {
 
 		case <-doneCh:
-			doneCount++
-			if doneCount > 1 {
+			workerCount--
+			if workerCount == 0 {
 				break watchdog
 			}
 
@@ -821,9 +838,9 @@ watchdog:
 	}
 
 	// wg.Wait()
-	for doneCount < 2 {
+	for workerCount > 0 {
 		<-doneCh
-		doneCount++
+		workerCount--
 	}
 	close(errCh) // no writers remain
 
