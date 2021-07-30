@@ -32,6 +32,7 @@ var getNewNftCids = &cli.Command{
 		if err != nil {
 			return err
 		}
+		defer db.Close()
 
 		nftKvID := cctx.String("cf-kvnamespace-nfts")
 		if nftKvID == "" {

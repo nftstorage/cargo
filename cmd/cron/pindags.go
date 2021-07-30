@@ -46,6 +46,7 @@ var pinDags = &cli.Command{
 		if err != nil {
 			return err
 		}
+		defer db.Close()
 
 		pinsToDo := make(map[cid.Cid]struct{}, bufPresize)
 

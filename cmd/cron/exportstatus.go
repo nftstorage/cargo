@@ -67,6 +67,7 @@ var exportStatus = &cli.Command{
 		if err != nil {
 			return err
 		}
+		defer db.Close()
 
 		err = db.QueryRow(
 			ctx,

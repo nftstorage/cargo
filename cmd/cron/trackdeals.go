@@ -32,6 +32,8 @@ var trackDeals = &cli.Command{
 		if err != nil {
 			return err
 		}
+		defer db.Close()
+
 		knownPieceCIDs := make(map[cid.Cid]cid.Cid)
 		rows, err := db.Query(
 			ctx,
