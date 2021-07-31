@@ -345,11 +345,13 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
     unagg.oldest_dag AS oldest_unaggregated,
     unagg.newest_dag AS newest_unaggregated,
     pg_size_pretty(su.bytes_total) AS size_total,
-    pg_size_pretty(unagg.bytes_total) AS size_unaggregated
+    ( su.bytes_total::NUMERIC / ( 1::BIGINT << 40 )::NUMERIC )::NUMERIC(99,3) AS TiB_total,
+    pg_size_pretty(unagg.bytes_total) AS size_unaggregated,
+    ( unagg.bytes_total::NUMERIC / ( 1::BIGINT << 40 )::NUMERIC )::NUMERIC(99,3) AS TiB_unaggregated
   FROM summary su
   JOIN cargo.sources s USING ( srcid )
   LEFT JOIN summary_unaggregated unagg USING ( srcid )
-  ORDER BY weight DESC NULLS FIRST, unagg.bytes_total DESC NULLS LAST, su.srcid
+  ORDER BY (unagg.bytes_total > 0 ), weight DESC NULLS FIRST, unagg.bytes_total DESC NULLS LAST, su.srcid
 );
 
 CREATE OR REPLACE
