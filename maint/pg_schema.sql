@@ -234,12 +234,11 @@ CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
   SELECT
       ds.cid_original,
       ds.srcid,
-      ds.entry_created
+      ds.entry_created,
+      ( ds.entry_removed IS NOT NULL ) as is_tombstone
     FROM cargo.dag_sources ds, cargo.dags d
   WHERE
     ds.cid_v1 = d.cid_v1
-      AND
-    ds.entry_removed IS NULL
       AND
     d.size_actual IS NULL
       AND
@@ -256,10 +255,12 @@ CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
       MIN( entry_created ) AS oldest_missing,
       MAX( entry_created) AS newest_missing
     FROM cargo.dags_missing_list
+    WHERE NOT is_tombstone
     GROUP BY srcid
   ),
   source_details AS (
     SELECT
+      s.project,
       si.srcid,
       s.details ->> 'nickname' AS source_nick,
       s.details ->> 'name' AS source_name,
@@ -345,9 +346,9 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
     unagg.oldest_dag AS oldest_unaggregated,
     unagg.newest_dag AS newest_unaggregated,
     pg_size_pretty(su.bytes_total) AS size_total,
-    ( su.bytes_total::NUMERIC / ( 1::BIGINT << 40 )::NUMERIC )::NUMERIC(99,3) AS TiB_total,
+    ( su.bytes_total::NUMERIC / ( 1::BIGINT << 30 )::NUMERIC )::NUMERIC(99,3) AS GiB_total,
     pg_size_pretty(unagg.bytes_total) AS size_unaggregated,
-    ( unagg.bytes_total::NUMERIC / ( 1::BIGINT << 40 )::NUMERIC )::NUMERIC(99,3) AS TiB_unaggregated
+    ( unagg.bytes_total::NUMERIC / ( 1::BIGINT << 30 )::NUMERIC )::NUMERIC(99,3) AS GiB_unaggregated
   FROM summary su
   JOIN cargo.sources s USING ( srcid )
   LEFT JOIN summary_unaggregated unagg USING ( srcid )

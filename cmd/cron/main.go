@@ -27,12 +27,12 @@ var globalFlags = []cli.Flag{
 	&cli.UintFlag{
 		Name:  "ipfs-api-timeout",
 		Usage: "HTTP API timeout in seconds",
-		Value: 300,
+		Value: 270,
 	},
 	&cli.UintFlag{
 		Name:  "ipfs-api-max-workers",
 		Usage: "Amount of concurrent IPFS API operations",
-		Value: 64,
+		Value: 128,
 	},
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:  "lotus-api",

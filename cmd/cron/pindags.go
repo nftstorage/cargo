@@ -53,10 +53,12 @@ var pinDags = &cli.Command{
 		rows, err := db.Query(
 			cctx.Context,
 			`
-			SELECT cid_v1 FROM cargo.dags WHERE
+			SELECT cid_v1 FROM cargo.dags d WHERE
 				size_actual IS NULL
 					AND
 				entry_last_updated > ( NOW() - $1::INTERVAL )
+					AND
+				EXISTS ( SELECT 42 FROM cargo.dag_sources ds WHERE d.cid_v1 = ds.cid_v1 AND ds.entry_removed IS NULL )
 			ORDER BY entry_created DESC -- ensure newest arrivals are attempted first
 			`,
 			fmt.Sprintf("%d days", cctx.Uint("skip-dags-aged")),
