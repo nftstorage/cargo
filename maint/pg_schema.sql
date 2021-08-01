@@ -168,13 +168,13 @@ CREATE TABLE IF NOT EXISTS cargo.providers (
 
 
 CREATE TABLE IF NOT EXISTS cargo.deals (
-  deal_id BIGINT UNIQUE NOT NULL,
+  deal_id BIGINT UNIQUE NOT NULL CONSTRAINT valid_id CHECK ( deal_id > 0 ),
   aggregate_cid TEXT NOT NULL REFERENCES cargo.aggregates ( aggregate_cid ),
   client TEXT NOT NULL REFERENCES cargo.clients ( client ),
   provider TEXT NOT NULL REFERENCES cargo.providers ( provider ),
   status TEXT NOT NULL,
-  epoch_start INTEGER NOT NULL,
-  epoch_end INTEGER NOT NULL,
+  epoch_start INTEGER NOT NULL CONSTRAINT valid_start CHECK ( epoch_start > 0 ),
+  epoch_end INTEGER NOT NULL CONSTRAINT valid_end CHECK ( epoch_end > 0 ),
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
   entry_last_updated TIMESTAMP WITH TIME ZONE NOT NULL
 );

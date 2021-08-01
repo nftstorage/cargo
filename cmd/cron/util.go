@@ -78,32 +78,34 @@ func lotusAPI(cctx *cli.Context) (api *lotusapi.FullNodeStruct, closer func(), e
 }
 
 func lotusLookbackTipset(cctx *cli.Context, api *lotusapi.FullNodeStruct) (*filtypes.TipSet, error) {
-	head, err := api.ChainHead(cctx.Context)
+	latestHead, err := api.ChainHead(cctx.Context)
 	if err != nil {
 		return nil, xerrors.Errorf("failed getting chain head: %w", err)
 	}
 
 	wallUnix := time.Now().Unix()
-	filUnix := int64(head.Blocks()[0].Timestamp)
+	filUnix := int64(latestHead.Blocks()[0].Timestamp)
 
 	if wallUnix < filUnix ||
 		wallUnix > filUnix+int64(
-			// allow up to 2 nul tipsets in a row ( virtually impossible )
+			// allow up to 2 nul tipsets in a row ( 3 is virtually impossible )
 			filbuild.PropagationDelaySecs+(2*filactors.EpochDurationSeconds),
 		) {
 		return nil, xerrors.Errorf(
 			"lotus API out of sync: chainHead reports unixtime %d (height: %d) while walltime is %d (delta: %s)",
 			filUnix,
-			head.Height(),
+			latestHead.Height(),
 			wallUnix,
 			time.Second*time.Duration(wallUnix-filUnix),
 		)
 	}
 
-	ts, err := api.ChainGetTipSetByHeight(cctx.Context, head.Height()-filabi.ChainEpoch(cctx.Uint("lotus-lookback-epochs")), head.Key())
+	latestHeight := latestHead.Height()
+
+	tipsetAtLookback, err := api.ChainGetTipSetByHeight(cctx.Context, latestHeight-filabi.ChainEpoch(cctx.Uint("lotus-lookback-epochs")), latestHead.Key())
 	if err != nil {
 		return nil, xerrors.Errorf("determining target tipset %d epochs ago failed: %w", cctx.Uint("lotus-lookback-epochs"), err)
 	}
 
-	return ts, nil
+	return tipsetAtLookback, nil
 }

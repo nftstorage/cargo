@@ -21,7 +21,7 @@ type statusDealEntry struct {
 	AggregateRootCid   *string    `json:"batchRootCid,omitempty"`
 	PieceCid           *string    `json:"pieceCid,omitempty"`
 	Network            *string    `json:"network,omitempty"`
-	Miner              *string    `json:"miner,omitempty"`
+	Provider           *string    `json:"miner,omitempty"`
 	ChainDealID        *uint64    `json:"chainDealID,omitempty"`
 	DatamodelSelector  *string    `json:"datamodelSelector,omitempty"`
 	DealActivation     *time.Time `json:"dealActivation,omitempty"`
@@ -159,7 +159,7 @@ var exportStatus = &cli.Command{
 				&curDeal.LastChanged,
 				&curDeal.AggregateRootCid,
 				&curDeal.PieceCid,
-				&curDeal.Miner,
+				&curDeal.Provider,
 				&curDeal.ChainDealID,
 				&curDeal.DatamodelSelector,
 				&eStart,

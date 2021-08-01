@@ -2,23 +2,26 @@ package main
 
 import (
 	"context"
+	"strconv"
+	"time"
 
-	"github.com/filecoin-project/go-address"
-	"github.com/filecoin-project/go-state-types/abi"
-	"github.com/filecoin-project/go-state-types/big"
+	filaddr "github.com/filecoin-project/go-address"
+	filabi "github.com/filecoin-project/go-state-types/abi"
+	filprovider "github.com/filecoin-project/lotus/chain/actors/builtin/miner"
 	"github.com/ipfs/go-cid"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
 )
 
 type filClient struct {
-	robust           address.Address
-	dataCapRemaining *abi.StoragePower
+	robust           filaddr.Address
+	dataCapRemaining *filabi.StoragePower
+}
+type filDeal struct {
+	pieceCid     cid.Cid
+	aggregateCid cid.Cid
 }
 
-var clientLookup = make(map[address.Address]filClient, 32)
-
-var pieceCount, dealCount int
 var trackDeals = &cli.Command{
 	Usage: "Track state of filecoin deals related to known PieceCIDs",
 	Name:  "track-deals",
@@ -28,45 +31,61 @@ var trackDeals = &cli.Command{
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
 
-		knownPieceCIDs := make(map[cid.Cid]cid.Cid)
+		clientLookup := make(map[filaddr.Address]filClient, 32)
+		knownDeals := make(map[int64]filDeal)
+		aggCidLookup := make(map[cid.Cid]cid.Cid)
 		rows, err := db.Query(
 			ctx,
-			`SELECT piece_cid, aggregate_cid FROM cargo.aggregates WHERE piece_cid IS NOT NULL`,
+			`
+			SELECT a.aggregate_cid, a.piece_cid, d.deal_id
+				FROM cargo.aggregates a
+				LEFT JOIN cargo.deals d
+					ON a.aggregate_cid = d.aggregate_cid AND d.status != 'terminated'
+			`,
 		)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
+			var aCidStr string
 			var pCidStr string
-			var bCidStr string
+			var dealID *int64
 
-			if err = rows.Scan(&pCidStr, &bCidStr); err != nil {
+			if err = rows.Scan(&aCidStr, &pCidStr, &dealID); err != nil {
+				return err
+			}
+			aCid, err := cid.Parse(aCidStr)
+			if err != nil {
 				return err
 			}
 			pCid, err := cid.Parse(pCidStr)
 			if err != nil {
 				return err
 			}
-			bCid, err := cid.Parse(bCidStr)
-			if err != nil {
-				return err
+
+			if dealID != nil {
+				knownDeals[*dealID] = filDeal{
+					pieceCid:     pCid,
+					aggregateCid: aCid,
+				}
 			}
-			knownPieceCIDs[pCid] = bCid
+
+			aggCidLookup[pCid] = aCid
 		}
 		if err := rows.Err(); err != nil {
 			return err
 		}
 
-		pieceCount = len(knownPieceCIDs)
+		var currentDealCount, newDealCount int
 		defer func() {
-			log.Infow("summary", "knownPieces", pieceCount, "totalDeals", dealCount)
+			log.Infow("summary", "knownPieces", len(aggCidLookup), "currentKnownDeals", currentDealCount, "newDeals", newDealCount, "terminatedDeals", len(knownDeals))
 		}()
 
-		if pieceCount == 0 {
+		if len(aggCidLookup) == 0 {
 			return nil
 		}
 
-		log.Infof("checking the status of %d known Piece CIDs", pieceCount)
+		log.Infof("checking the status of %d active deals and %d known Piece CIDs", len(knownDeals), len(aggCidLookup))
 
 		api, apiClose, err := lotusAPI(cctx)
 		if err != nil {
@@ -79,20 +98,31 @@ var trackDeals = &cli.Command{
 			return err
 		}
 
-		log.Infof("retrieving Market Deals from state %s at epoch %d", lts.Key().String(), lts.Height())
+		log.Infow("retrieving Market Deals from", "state", lts.Key(), "epoch", lts.Height(), "wallTime", time.Unix(int64(lts.Blocks()[0].Timestamp), 0))
 		deals, err := api.StateMarketDeals(ctx, lts.Key())
 		if err != nil {
 			return err
 		}
 		log.Infof("retrieved %d active deal records", len(deals))
 
-		for dealID, d := range deals {
-			aggCid, known := knownPieceCIDs[d.Proposal.PieceCID]
+		for dealIDString, d := range deals {
+			aggCid, known := aggCidLookup[d.Proposal.PieceCID]
 			if !known {
 				continue
 			}
 
-			dealCount++
+			dealID, err := strconv.ParseInt(dealIDString, 10, 64)
+			if err != nil {
+				return err
+			}
+
+			currentDealCount++
+			if _, known := knownDeals[dealID]; !known {
+				newDealCount++
+			} else {
+				// whatevr remains is not in SMA list, thus "terminated"
+				delete(knownDeals, dealID)
+			}
 
 			_, err = db.Exec(
 				ctx,
@@ -119,7 +149,7 @@ var trackDeals = &cli.Command{
 					return err
 				}
 				if fc.dataCapRemaining == nil {
-					z := big.NewInt(0)
+					z := filabi.NewStoragePower(0)
 					fc.dataCapRemaining = &z
 				}
 
@@ -140,20 +170,12 @@ var trackDeals = &cli.Command{
 				clientLookup[d.Proposal.Client] = fc
 			}
 
-			epochStart := new(int64)
-			epochEnd := new(int64)
-
-			if d.Proposal.StartEpoch > 0 {
-				*epochStart = int64(d.Proposal.StartEpoch)
-			}
-			if d.Proposal.EndEpoch > 0 {
-				*epochEnd = int64(d.Proposal.EndEpoch)
-			}
-
 			status := "published"
 			if d.State.SectorStartEpoch > 0 {
 				status = "active"
-				*epochStart = int64(d.State.SectorStartEpoch)
+			} else if d.Proposal.StartEpoch+filprovider.WPoStChallengeWindow < lts.Height() {
+				// if things are lookback+one deadlines late: they are never going to make it
+				status = "terminated"
 			}
 
 			_, err = db.Exec(
@@ -162,17 +184,35 @@ var trackDeals = &cli.Command{
 				INSERT INTO cargo.deals ( aggregate_cid, client, provider, status, deal_id, epoch_start, epoch_end )
 					VALUES ( $1, $2, $3, $4, $5, $6, $7 )
 				ON CONFLICT ( deal_id ) DO UPDATE SET
-					status = EXCLUDED.status,
-					epoch_start = EXCLUDED.epoch_start,
-					epoch_end = EXCLUDED.epoch_end
+					status = EXCLUDED.status
 				`,
 				aggCid.String(),
 				clientLookup[d.Proposal.Client].robust.String(),
 				d.Proposal.Provider.String(),
 				status,
 				dealID,
-				epochStart,
-				epochEnd,
+				d.Proposal.StartEpoch,
+				d.Proposal.EndEpoch,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
+		// we have some terminations ( no longer in the market state )
+		if len(knownDeals) > 0 {
+			toFail := make([]int64, 0, len(knownDeals))
+			for dID := range knownDeals {
+				toFail = append(toFail, dID)
+			}
+
+			_, err = db.Exec(
+				ctx,
+				`
+				UPDATE cargo.deals SET status = $1 WHERE deal_id = ANY ( $2::BIGINT[] )
+				`,
+				`terminated`,
+				toFail,
 			)
 			if err != nil {
 				return err

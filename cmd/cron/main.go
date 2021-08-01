@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"time"
 
+	filactors "github.com/filecoin-project/specs-actors/actors/builtin"
 	fslock "github.com/ipfs/go-fs-lock"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/urfave/cli/v2"
@@ -19,6 +20,8 @@ import (
 
 var currentCmd string
 var currentCmdLock io.Closer
+
+const filDefaultLookback = 10
 
 var globalFlags = []cli.Flag{
 	&cli.StringFlag{
@@ -41,7 +44,11 @@ var globalFlags = []cli.Flag{
 	}),
 	&cli.UintFlag{
 		Name:  "lotus-lookback-epochs",
-		Value: 10,
+		Value: filDefaultLookback,
+		DefaultText: fmt.Sprintf("%d epochs / %ds",
+			filDefaultLookback,
+			filactors.EpochDurationSeconds*filDefaultLookback,
+		),
 	},
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:  "pg-connstring",
