@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS cargo.sources (
   srcid BIGSERIAL NOT NULL UNIQUE,
   project INTEGER NOT NULL,
   source TEXT NOT NULL,
+  weight INTEGER CONSTRAINT weight_range CHECK ( weight BETWEEN -99 AND 99 ),
   details JSONB,
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL,
   CONSTRAINT singleton_source_record UNIQUE ( source, project )
@@ -105,9 +106,9 @@ CREATE TRIGGER trigger_dag_update_on_related_source_insert_delete
   EXECUTE PROCEDURE cargo.update_source_dags_timestamps()
 ;
 CREATE TRIGGER trigger_dag_update_on_related_source_change
-  AFTER UPDATE ON cargo.sources
+  AFTER UPDATE OF weight ON cargo.sources
   FOR EACH ROW
-  WHEN (OLD IS DISTINCT FROM NEW)
+  WHEN ( COALESCE( OLD.weight, 100) != COALESCE( NEW.weight, 100 ) )
   EXECUTE PROCEDURE cargo.update_source_dags_timestamps()
 ;
 
@@ -265,7 +266,7 @@ CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
       s.details ->> 'nickname' AS source_nick,
       s.details ->> 'name' AS source_name,
       s.details ->> 'email' AS source_email,
-      s.details ->> 'dcweight' AS source_weight,
+      s.weight,
       oldest_missing,
       newest_missing,
       si.count_missing,
@@ -340,7 +341,7 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
     s.details ->> 'nickname' AS source_nick,
     s.details ->> 'name' AS source_name,
     s.details ->> 'email' AS source_email,
-    s.details ->> 'dcweight' AS weight,
+    s.weight,
     su.count_total AS count_total,
     unagg.count_total AS count_unaggregated,
     unagg.oldest_dag AS oldest_unaggregated,

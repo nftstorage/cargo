@@ -99,7 +99,7 @@ var exportStatus = &cli.Command{
 								OR
 							ds.entry_removed IS NOT NULL
 								OR
-							COALESCE( ( s.details ->> 'dcweight' )::INTEGER, 0 ) < 0
+							COALESCE( s.weight, 0 ) < 0
 								OR
 							EXISTS (
 								SELECT 42 FROM cargo.aggregate_entries ae, cargo.deals de

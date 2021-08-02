@@ -135,14 +135,14 @@ var aggregateDags = &cli.Command{
 				SELECT
 						ds.srcid,
 						MIN(ds.entry_created) AS oldest_unaggregated,
-						COALESCE( ( s.details ->> 'dcweight' )::INTEGER, 999 ) AS dcweight
+						COALESCE( s.weight, 100 ) AS weight
 					FROM cargo.dag_sources ds
 					JOIN cargo.sources s USING ( srcid )
 					JOIN cargo.dags d USING ( cid_v1 )
 				WHERE
 					d.size_actual IS NOT NULL AND d.size_actual <= %[1]d -- only pinned entries (FIXME for now do not deal with oversizes/that comes later)
 						AND
-					COALESCE( ( s.details ->> 'dcweight' )::INTEGER, 999 ) >= 0
+					COALESCE( s.weight, 100 ) >= 0
 						AND
 					ds.entry_removed IS NULL
 						AND
@@ -156,7 +156,7 @@ var aggregateDags = &cli.Command{
 								AND
 							a.metadata->>'RecordType' = '%[2]s'
 					)
-				GROUP BY ds.srcid, dcweight
+				GROUP BY ds.srcid, weight
 			)
 			SELECT
 					s.srcid,
@@ -218,7 +218,7 @@ var aggregateDags = &cli.Command{
 							sds.entry_created < ( NOW() - '%[3]s'::INTERVAL )
 					)
 				)
-			ORDER BY s.dcweight DESC, s.oldest_unaggregated, s.srcid, d.size_actual DESC, d.cid_v1
+			ORDER BY s.weight DESC, s.oldest_unaggregated, s.srcid, d.size_actual DESC, d.cid_v1
 			`,
 			targetMaxSize,
 			aggregateType,

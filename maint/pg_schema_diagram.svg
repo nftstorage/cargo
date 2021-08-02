@@ -157,20 +157,21 @@
 <!-- node5 -->
 <g id="node5" class="node">
 <title>node5</title>
-<polygon fill="white" stroke="black" points="12,-415 12,-521 328,-521 328,-415 12,-415"/>
-<text text-anchor="middle" x="170" y="-505.8" font-family="Times,serif" font-size="14.00">sources</text>
-<polyline fill="none" stroke="black" points="12,-498 328,-498 "/>
-<text text-anchor="start" x="20" y="-482.8" font-family="Times,serif" font-size="14.00">&#45; srcid bigint [U]</text>
-<text text-anchor="start" x="20" y="-467.8" font-family="Times,serif" font-size="14.00">&#45; project integer [U]</text>
-<text text-anchor="start" x="20" y="-452.8" font-family="Times,serif" font-size="14.00">&#45; source text [U]</text>
-<text text-anchor="start" x="20" y="-437.8" font-family="Times,serif" font-size="14.00">&#45; details jsonb [N]</text>
-<text text-anchor="start" x="20" y="-422.8" font-family="Times,serif" font-size="14.00">&#45; entry_created timestamp with time zone</text>
+<polygon fill="white" stroke="black" points="12,-407.5 12,-528.5 328,-528.5 328,-407.5 12,-407.5"/>
+<text text-anchor="middle" x="170" y="-513.3" font-family="Times,serif" font-size="14.00">sources</text>
+<polyline fill="none" stroke="black" points="12,-505.5 328,-505.5 "/>
+<text text-anchor="start" x="20" y="-490.3" font-family="Times,serif" font-size="14.00">&#45; srcid bigint [U]</text>
+<text text-anchor="start" x="20" y="-475.3" font-family="Times,serif" font-size="14.00">&#45; project integer [U]</text>
+<text text-anchor="start" x="20" y="-460.3" font-family="Times,serif" font-size="14.00">&#45; source text [U]</text>
+<text text-anchor="start" x="20" y="-445.3" font-family="Times,serif" font-size="14.00">&#45; details jsonb [N]</text>
+<text text-anchor="start" x="20" y="-430.3" font-family="Times,serif" font-size="14.00">&#45; entry_created timestamp with time zone</text>
+<text text-anchor="start" x="20" y="-415.3" font-family="Times,serif" font-size="14.00">&#45; weight integer [N]</text>
 </g>
 <!-- node5&#45;&gt;node8 -->
 <g id="edge9" class="edge">
 <title>node5&#45;&gt;node8</title>
-<path fill="none" stroke="black" d="M175.86,-414.74C178.06,-395.19 180.61,-372.41 183.07,-350.5"/>
-<polygon fill="black" stroke="black" points="186.56,-350.83 184.19,-340.51 179.6,-350.05 186.56,-350.83"/>
+<path fill="none" stroke="black" d="M176.68,-407.43C178.67,-389.71 180.89,-369.91 183.04,-350.75"/>
+<polygon fill="black" stroke="black" points="186.52,-351.14 184.16,-340.81 179.56,-350.36 186.52,-351.14"/>
 </g>
 <!-- node10 -->
 <g id="node10" class="node">
