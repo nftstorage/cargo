@@ -14,7 +14,6 @@ import (
 	"github.com/ipfs/go-cid"
 	ipfsapi "github.com/ipfs/go-ipfs-api"
 	"github.com/jackc/pgx/v4"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
 )
@@ -41,12 +40,6 @@ var pinDags = &cli.Command{
 		var closer func()
 		cctx.Context, closer = context.WithCancel(cctx.Context)
 		defer closer()
-
-		db, err := connectDb(cctx)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
 
 		pinsToDo := make(map[cid.Cid]struct{}, bufPresize)
 
@@ -156,7 +149,7 @@ var pinDags = &cli.Command{
 						return
 					}
 
-					if err := pinAndAnalyze(cctx, db, c, total); err != nil {
+					if err := pinAndAnalyze(cctx, c, total); err != nil {
 						errCh <- err
 						return
 					}
@@ -183,7 +176,7 @@ type refEntry struct {
 	Err string
 }
 
-func pinAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, rootCid cid.Cid, total stats) (err error) {
+func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) {
 
 	api := ipfsAPI(cctx)
 

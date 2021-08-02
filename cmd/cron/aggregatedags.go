@@ -25,7 +25,6 @@ import (
 	ipfsfiles "github.com/ipfs/go-ipfs-files"
 	"github.com/ipfs/go-merkledag"
 	"github.com/jackc/pgx/v4"
-	"github.com/jackc/pgx/v4/pgxpool"
 	sha256simd "github.com/minio/sha256-simd"
 	"github.com/mitchellh/go-homedir"
 	"github.com/multiformats/go-multihash"
@@ -129,12 +128,6 @@ var aggregateDags = &cli.Command{
 
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
-
-		db, err := connectDb(cctx)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
 
 		masterListSQL := fmt.Sprintf(
 			`
@@ -362,7 +355,7 @@ var aggregateDags = &cli.Command{
 
 		//
 		// go through the proposed bundles in parallel, see what makes it
-		undersizedInvalidCars, err := reifyAggregateCars(cctx, db, stats, aggBundles)
+		undersizedInvalidCars, err := reifyAggregateCars(cctx, stats, aggBundles)
 		if err != nil {
 			return err
 		}
@@ -466,7 +459,7 @@ var aggregateDags = &cli.Command{
 					strings.Join(bundleShards, "  "),
 				)
 
-				newInvalidCars, err := reifyAggregateCars(cctx, db, stats, aggBundles)
+				newInvalidCars, err := reifyAggregateCars(cctx, stats, aggBundles)
 				if err != nil {
 					return err
 				}
@@ -557,14 +550,14 @@ var aggregateDags = &cli.Command{
 		}
 
 		// if it works - it works
-		_, err = reifyAggregateCars(cctx, db, stats, [][]dagaggregator.AggregateDagEntry{finalDitchAgg})
+		_, err = reifyAggregateCars(cctx, stats, [][]dagaggregator.AggregateDagEntry{finalDitchAgg})
 		return err
 	},
 }
 
 var reifyRoundsCount int
 
-func reifyAggregateCars(cctx *cli.Context, db *pgxpool.Pool, stats runningTotals, aggBundles [][]dagaggregator.AggregateDagEntry) ([]aggregateResult, error) {
+func reifyAggregateCars(cctx *cli.Context, stats runningTotals, aggBundles [][]dagaggregator.AggregateDagEntry) ([]aggregateResult, error) {
 
 	reifyRoundsCount++
 
@@ -608,7 +601,7 @@ func reifyAggregateCars(cctx *cli.Context, db *pgxpool.Pool, stats runningTotals
 					if !chanOpen {
 						return
 					}
-					res, err := aggregateAndAnalyze(cctx, db, carExportDir, toAgg)
+					res, err := aggregateAndAnalyze(cctx, carExportDir, toAgg)
 					if err != nil {
 						errCh <- err
 						ctxCloser()
@@ -644,7 +637,7 @@ func reifyAggregateCars(cctx *cli.Context, db *pgxpool.Pool, stats runningTotals
 	return undersized, nil
 }
 
-func aggregateAndAnalyze(cctx *cli.Context, db *pgxpool.Pool, outDir string, toAgg []dagaggregator.AggregateDagEntry) (*aggregateResult, error) {
+func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator.AggregateDagEntry) (*aggregateResult, error) {
 	ctx, ctxCloser := context.WithCancel(cctx.Context)
 	defer ctxCloser()
 

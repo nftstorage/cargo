@@ -10,7 +10,6 @@ import (
 
 	"github.com/cloudflare/cloudflare-go"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
 )
@@ -63,13 +62,7 @@ var exportStatus = &cli.Command{
 
 		t0 := time.Now()
 
-		db, err := connectDb(cctx)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
-
-		err = db.QueryRow(
+		err := db.QueryRow(
 			ctx,
 			`
 			SELECT COUNT( DISTINCT ( ds.cid_original ) )
@@ -195,7 +188,7 @@ var exportStatus = &cli.Command{
 				// see if we grew too big and need to flush
 				// 10k entries / 100MiB size ( round down for overhead, can be significant )
 				if len(updates) > 9999 || updatesApproxBytes > (85<<20) {
-					if err = uploadAndMarkUpdates(cctx, db, t0, updates); err != nil {
+					if err = uploadAndMarkUpdates(cctx, t0, updates); err != nil {
 						return err
 					}
 					// reset
@@ -243,11 +236,11 @@ var exportStatus = &cli.Command{
 			return err
 		}
 
-		return uploadAndMarkUpdates(cctx, db, t0, updates)
+		return uploadAndMarkUpdates(cctx, t0, updates)
 	},
 }
 
-func uploadAndMarkUpdates(cctx *cli.Context, db *pgxpool.Pool, updStartTime time.Time, updates map[string]*statusUpdate) error {
+func uploadAndMarkUpdates(cctx *cli.Context, updStartTime time.Time, updates map[string]*statusUpdate) error {
 
 	toUpd := make(cloudflare.WorkersKVBulkWriteRequest, 0, len(updates))
 	updatedCids := make([]string, 0, len(updates))

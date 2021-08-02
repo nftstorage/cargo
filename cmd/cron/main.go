@@ -10,6 +10,7 @@ import (
 	"time"
 
 	fslock "github.com/ipfs/go-fs-lock"
+	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/urfave/cli/v2"
 	"github.com/urfave/cli/v2/altsrc"
 
@@ -71,6 +72,16 @@ var globalFlags = []cli.Flag{
 func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
+
+	cleanup := func() {
+		cancel()
+		if db != nil {
+			db.Close()
+		}
+		time.Sleep(250 * time.Millisecond) // give a bit of time for various parts to close
+	}
+	defer cleanup()
+
 	go func() {
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, unix.SIGINT, unix.SIGTERM)
@@ -105,6 +116,7 @@ func main() {
 
 		// if we are not interactive - be quiet on a failed lock
 		if !showProgress && errors.As(err, new(fslock.LockedError)) {
+			cleanup()
 			os.Exit(1)
 		}
 
@@ -112,6 +124,7 @@ func main() {
 		if currentCmdLock != nil {
 			log.Warnw(logHdr, logArgs...)
 		}
+		cleanup()
 		os.Exit(1)
 	}
 
@@ -169,6 +182,18 @@ var beforeCliSetup = func(cctx *cli.Context) error {
 		if currentCmdLock, err = fslock.Lock(os.TempDir(), "cargocron-"+firstCmdOccurence); err != nil {
 			return err
 		}
+
+		// init the shared DB connection: do it here, since now we know the config *AND*
+		// we want the maxConn counter shared, singleton-style
+		dbConnCfg, err := pgxpool.ParseConfig(cctx.String("pg-connstring"))
+		if err != nil {
+			return err
+		}
+		db, err = pgxpool.ConnectConfig(cctx.Context, dbConnCfg)
+		if err != nil {
+			return err
+		}
+
 		currentCmd = firstCmdOccurence
 		log.Infow(fmt.Sprintf("=== BEGIN '%s' run", currentCmd))
 	}

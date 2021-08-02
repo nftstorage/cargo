@@ -28,6 +28,7 @@ const (
 var (
 	log          = logging.Logger(fmt.Sprintf("dagcargo-cron(%d)", os.Getpid()))
 	showProgress = isatty.IsTerminal(os.Stderr.Fd())
+	db           *pgxpool.Pool
 )
 
 func init() {
@@ -42,14 +43,6 @@ func cidv1(c cid.Cid) cid.Cid {
 }
 
 func mainnetTime(filEpoch int64) time.Time { return time.Unix(filEpoch*30+1598306400, 0) }
-
-func connectDb(cctx *cli.Context) (*pgxpool.Pool, error) {
-	dbConnCfg, err := pgxpool.ParseConfig(cctx.String("pg-connstring"))
-	if err != nil {
-		return nil, err
-	}
-	return pgxpool.ConnectConfig(cctx.Context, dbConnCfg)
-}
 
 func ipfsAPI(cctx *cli.Context) *ipfsapi.Shell {
 	s := ipfsapi.NewShell(cctx.String("ipfs-api"))

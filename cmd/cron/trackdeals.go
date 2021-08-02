@@ -28,12 +28,6 @@ var trackDeals = &cli.Command{
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
 
-		db, err := connectDb(cctx)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
-
 		knownPieceCIDs := make(map[cid.Cid]cid.Cid)
 		rows, err := db.Query(
 			ctx,

@@ -28,12 +28,6 @@ var getNewNftCids = &cli.Command{
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
 
-		db, err := connectDb(cctx)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
-
 		nftKvID := cctx.String("cf-kvnamespace-nfts")
 		if nftKvID == "" {
 			return xerrors.New("config `cf-kvnamespace-nfts` is not set")
