@@ -117,21 +117,35 @@ CREATE TABLE IF NOT EXISTS cargo.dag_sources (
   srcid BIGINT NOT NULL REFERENCES cargo.sources ( srcid ),
   cid_v1 TEXT NOT NULL REFERENCES cargo.dags ( cid_v1 ),
   entry_id TEXT NOT NULL,
+  details JSONB,
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  entry_last_updated TIMESTAMP WITH TIME ZONE NOT NULL,
   entry_removed TIMESTAMP WITH TIME ZONE,
   entry_last_exported TIMESTAMP WITH TIME ZONE,
   CONSTRAINT singleton_dag_source_record UNIQUE ( srcid, entry_id )
 );
 CREATE INDEX IF NOT EXISTS dag_sources_cidv1_idx ON cargo.dag_sources ( cid_v1 );
 CREATE INDEX IF NOT EXISTS dag_sources_entry_removed ON cargo.dag_sources ( entry_removed );
+CREATE TRIGGER trigger_dag_source_insert
+  BEFORE INSERT ON cargo.dag_sources
+  FOR EACH ROW
+  EXECUTE PROCEDURE cargo.update_entry_timestamp()
+;
 CREATE TRIGGER trigger_dag_update_on_new_sources
   AFTER INSERT OR DELETE ON cargo.dag_sources
   FOR EACH ROW
   EXECUTE PROCEDURE cargo.update_parent_dag_timestamp()
 ;
+CREATE TRIGGER trigger_dag_source_updated
+  BEFORE UPDATE ON cargo.dag_sources
+  FOR EACH ROW
+  WHEN (OLD IS DISTINCT FROM NEW)
+  EXECUTE PROCEDURE cargo.update_entry_timestamp()
+;
 CREATE TRIGGER trigger_dag_update_on_related_sources
   AFTER UPDATE OF entry_id, entry_removed ON cargo.dag_sources
   FOR EACH ROW
+  WHEN (OLD IS DISTINCT FROM NEW)
   EXECUTE PROCEDURE cargo.update_parent_dag_timestamp()
 ;
 
@@ -263,7 +277,7 @@ CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
     SELECT
       s.project,
       si.srcid,
-      s.details ->> 'nickname' AS source_nick,
+      COALESCE( s.details ->> 'nickname', s.details ->> 'github' ) AS source_nick,
       s.details ->> 'name' AS source_name,
       s.details ->> 'email' AS source_email,
       s.weight,
@@ -337,8 +351,9 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
       GROUP BY srcid
     )
   SELECT
+    s.project,
     su.srcid,
-    s.details ->> 'nickname' AS source_nick,
+    COALESCE( s.details ->> 'nickname', s.details ->> 'github' ) AS source_nick,
     s.details ->> 'name' AS source_name,
     s.details ->> 'email' AS source_email,
     s.weight,

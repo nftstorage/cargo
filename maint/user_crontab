@@ -6,6 +6,7 @@
 GOLOG_LOG_FMT=json
 
 # Everything fires every 5 mins: if another process is running, the lock is silently observed without loggging anything
+*/5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron get-new-dags                            >>"$LOGDIR/cron_get-new-dags.log.ndjson" 2>&1
 */5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron get-new-nfts                            >>"$LOGDIR/cron_get-new-nfts.log.ndjson" 2>&1
 */5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron export-status                           >>"$LOGDIR/cron_export-status.log.ndjson" 2>&1
 */5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron track-deals                             >>"$LOGDIR/cron_track-deals.log.ndjson" 2>&1

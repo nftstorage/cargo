@@ -42,6 +42,8 @@ var getNewNftCids = &cli.Command{
 			return err
 		}
 
+		var bufPresize = 128 << 20 // size to the approximate amount of DAGs we track
+
 		// kick off pulling in the background, while we pull out our current set
 		errCh := make(chan error, 2)
 		resCh := make(chan cloudflare.StorageKey, bufPresize)

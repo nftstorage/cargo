@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	filbuild "github.com/filecoin-project/lotus/build"
 	filtypes "github.com/filecoin-project/lotus/chain/types"
 	filactors "github.com/filecoin-project/specs-actors/actors/builtin"
+	"github.com/hashicorp/go-retryablehttp"
+	"github.com/hasura/go-graphql-client"
 	"github.com/ipfs/go-cid"
 	ipfsapi "github.com/ipfs/go-ipfs-api"
 	logging "github.com/ipfs/go-log/v2"
@@ -22,7 +25,7 @@ import (
 )
 
 const (
-	bufPresize = 128 << 20 // size to the approximate amount of DAGs we track
+	faunaPageSize = 99_999
 )
 
 var (
@@ -108,4 +111,44 @@ func lotusLookbackTipset(cctx *cli.Context, api *lotusapi.FullNodeStruct) (*filt
 	}
 
 	return tipsetAtLookback, nil
+}
+
+func faunaClient(cctx *cli.Context, projectName string) (*graphql.Client, error) {
+	cctx.String("")
+
+	optName := "fauna-token-" + projectName
+	bearer := cctx.String(optName)
+	if bearer == "" {
+		return nil, xerrors.Errorf("config '%s' is not set", optName)
+	}
+
+	rc := retryablehttp.NewClient()
+	rc.Logger = &retLogWrap{ipfslog: log}
+	rc.RetryWaitMin = 2 * time.Second
+	rc.RetryWaitMin = 25 * time.Second
+	rc.RetryMax = 5
+	sc := rc.StandardClient()
+	sc.Transport = &authorizer{rt: sc.Transport, token: bearer}
+	return graphql.NewClient("https://graphql.fauna.com/graphql", sc), nil
+}
+
+type retLogWrap struct{ ipfslog *logging.ZapEventLogger }
+
+func (w *retLogWrap) Error(msg string, kv ...interface{}) { w.ipfslog.Errorw(msg, kv...) }
+func (w *retLogWrap) Info(msg string, kv ...interface{})  { w.ipfslog.Infow(msg, kv...) }
+func (w *retLogWrap) Debug(msg string, kv ...interface{}) { w.ipfslog.Debugw(msg, kv...) }
+func (w *retLogWrap) Warn(msg string, kv ...interface{})  { w.ipfslog.Warnw(msg, kv...) }
+
+type authorizer struct {
+	token string
+	rt    http.RoundTripper
+}
+
+func (a *authorizer) RoundTrip(rq *http.Request) (*http.Response, error) {
+	rq.Header.Add("Authorization", "Bearer "+a.token)
+	t := a.rt
+	if t == nil {
+		t = http.DefaultTransport
+	}
+	return t.RoundTrip(rq)
 }

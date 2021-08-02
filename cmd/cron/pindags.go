@@ -41,8 +41,7 @@ var pinDags = &cli.Command{
 		cctx.Context, closer = context.WithCancel(cctx.Context)
 		defer closer()
 
-		pinsToDo := make(map[cid.Cid]struct{}, bufPresize)
-
+		pinsToDo := make(map[cid.Cid]struct{}, 2048)
 		rows, err := db.Query(
 			cctx.Context,
 			`

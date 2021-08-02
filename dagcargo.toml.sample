@@ -1,5 +1,8 @@
+
 cf-account = "..."
 cf-kvnamespace-nfts = "..."
 cf-kvnamespace-deals = "..."
 cf-kvnamespace-users = "..."
 cf-bearer-token = "..."
+fauna-token-w3s-prod = "..."
+fauna-token-w3s-stage = "..."

@@ -57,22 +57,37 @@ var globalFlags = []cli.Flag{
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "cf-account",
 		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "cf-kvnamespace-nfts",
 		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "cf-kvnamespace-deals",
 		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "cf-kvnamespace-users",
 		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "cf-bearer-token",
 		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
+	}),
+	altsrc.NewStringFlag(&cli.StringFlag{
+		Name:        "fauna-token-w3s-prod",
+		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
+	}),
+	altsrc.NewStringFlag(&cli.StringFlag{
+		Name:        "fauna-token-w3s-stage",
+		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
 	}),
 }
 
@@ -106,6 +121,7 @@ func main() {
 		Flags:  globalFlags,
 		Commands: []*cli.Command{
 			getNewNftCids,
+			getNewDags,
 			pinDags,
 			aggregateDags,
 			trackDeals,
