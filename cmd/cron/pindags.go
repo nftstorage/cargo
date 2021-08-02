@@ -208,9 +208,9 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) 
 
 	err = api.Request("pin/add").Arguments(rootCid.String()).Exec(cctx.Context, nil)
 
-	// If we fail to even pin - just warn and move on without an error ( we didn't write anything to the DB yet )
+	// If we fail to even pin - quietly move on without an error ( we didn't write anything to the DB yet )
 	if err != nil {
-		log.Warnf("failure to pin %s: %s", rootCid, err)
+		log.Debugf("failure to pin %s: %s", rootCid, err)
 		atomic.AddUint64(total.failed, 1)
 		return nil
 	}
