@@ -65,7 +65,7 @@ var exportStatus = &cli.Command{
 		err := db.QueryRow(
 			ctx,
 			`
-			SELECT COUNT( DISTINCT ( ds.cid_original ) )
+			SELECT COUNT( DISTINCT ( ds.entry_id ) )
 				FROM cargo.dag_sources ds
 				JOIN cargo.dags d USING ( cid_v1 )
 				JOIN cargo.sources s USING ( srcid )
@@ -91,7 +91,7 @@ var exportStatus = &cli.Command{
 			ctx,
 			`
 			SELECT
-					ds.cid_original,
+					ds.entry_id,
 					ds.cid_v1,
 					(
 						CASE WHEN
@@ -131,7 +131,7 @@ var exportStatus = &cli.Command{
 				d.size_actual IS NOT NULL
 					AND
 				( ds.entry_last_exported IS NULL OR d.entry_last_updated > ds.entry_last_exported )
-			ORDER BY ds.cid_original -- order is critical to form bulk-update batches
+			ORDER BY ds.entry_id -- order is critical to form bulk-update batches
 			`,
 			projectNftStorage,
 		)

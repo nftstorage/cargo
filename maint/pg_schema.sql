@@ -116,11 +116,11 @@ CREATE TRIGGER trigger_dag_update_on_related_source_change
 CREATE TABLE IF NOT EXISTS cargo.dag_sources (
   srcid BIGINT NOT NULL REFERENCES cargo.sources ( srcid ),
   cid_v1 TEXT NOT NULL REFERENCES cargo.dags ( cid_v1 ),
-  cid_original TEXT NOT NULL,
+  entry_id TEXT NOT NULL,
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
   entry_removed TIMESTAMP WITH TIME ZONE,
   entry_last_exported TIMESTAMP WITH TIME ZONE,
-  CONSTRAINT singleton_dag_source_record UNIQUE ( srcid, cid_original )
+  CONSTRAINT singleton_dag_source_record UNIQUE ( srcid, entry_id )
 );
 CREATE INDEX IF NOT EXISTS dag_sources_cidv1_idx ON cargo.dag_sources ( cid_v1 );
 CREATE INDEX IF NOT EXISTS dag_sources_entry_removed ON cargo.dag_sources ( entry_removed );
@@ -130,7 +130,7 @@ CREATE TRIGGER trigger_dag_update_on_new_sources
   EXECUTE PROCEDURE cargo.update_parent_dag_timestamp()
 ;
 CREATE TRIGGER trigger_dag_update_on_related_sources
-  AFTER UPDATE OF cid_original, entry_removed ON cargo.dag_sources
+  AFTER UPDATE OF entry_id, entry_removed ON cargo.dag_sources
   FOR EACH ROW
   EXECUTE PROCEDURE cargo.update_parent_dag_timestamp()
 ;
@@ -233,7 +233,7 @@ CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
     SELECT MAX(entry_last_updated) AS ts FROM cargo.dags WHERE size_actual IS NOT NULL
   )
   SELECT
-      ds.cid_original,
+      ds.entry_id,
       ds.srcid,
       ds.entry_created,
       ( ds.entry_removed IS NOT NULL ) as is_tombstone

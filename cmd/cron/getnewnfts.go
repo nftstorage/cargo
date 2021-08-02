@@ -71,7 +71,7 @@ var getNewNftCids = &cli.Command{
 		initiallyInDb := make(map[[2]string]struct{}, bufPresize)
 		rows, err = db.Query(
 			ctx,
-			`SELECT ds.cid_original, s.source
+			`SELECT ds.entry_id, s.source
 				FROM cargo.dag_sources ds
 				JOIN cargo.sources s
 					ON ( ds.srcid = s.srcid AND s.project = $1 )
@@ -234,7 +234,7 @@ var getNewNftCids = &cli.Command{
 			_, err = db.Exec(
 				ctx,
 				`
-				INSERT INTO cargo.dag_sources ( cid_v1, cid_original, srcid, entry_created ) VALUES ( $1, $2, $3, $4 )
+				INSERT INTO cargo.dag_sources ( cid_v1, entry_id, srcid, entry_created ) VALUES ( $1, $2, $3, $4 )
 					ON CONFLICT ON CONSTRAINT singleton_dag_source_record DO UPDATE SET entry_removed = NULL
 				`,
 				cidNormStr,
@@ -263,7 +263,7 @@ var getNewNftCids = &cli.Command{
 					WHERE
 						ds.srcid = s.srcid
 							AND
-						ds.cid_original = $1
+						ds.entry_id = $1
 							AND
 						s.project = $2
 							AND
