@@ -338,14 +338,12 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
             FROM cargo.refs r
             JOIN cargo.dag_sources rds USING ( cid_v1 )
             LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
-            LEFT JOIN cargo.aggregates ra
-              ON rae.aggregate_cid = ra.aggregate_cid AND ra.metadata->>'RecordType' = 'DagAggregate UnixFS'
           WHERE
-            r.ref_v1 = ds.cid_v1
+            r.ref_v1 = d.cid_v1
               AND
             rds.srcid = ds.srcid
               AND
-            ra.aggregate_cid IS NULL
+            rae.aggregate_cid IS NULL
         )
       GROUP BY srcid
     )
@@ -375,31 +373,30 @@ CREATE OR REPLACE
     LANGUAGE sql STABLE PARALLEL SAFE
 AS $$
   SELECT
-    ds.srcid,
-    ds.cid_v1,
-    size_actual,
-    ds.entry_created
-  FROM cargo.dag_sources ds
-  JOIN cargo.dags USING ( cid_v1 )
+      ds.srcid,
+      ds.cid_v1,
+      size_actual,
+      ds.entry_created
+    FROM cargo.dag_sources ds
+    JOIN cargo.dags d USING ( cid_v1 )
+    LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
   WHERE
     ds.srcid = ANY( $1 )
       AND
     ds.entry_removed IS NULL
       AND
-    size_actual IS NOT NULL
+    d.size_actual IS NOT NULL
       AND
-    NOT EXISTS ( SELECT 42 FROM cargo.aggregate_entries ae WHERE ds.cid_v1 = ae.cid_v1 )
+    ae.cid_v1 IS NULL
       AND
     -- exclude anything that is a member of something else unaggregated (from any srcid)
     NOT EXISTS (
       SELECT 42
         FROM cargo.refs r
         LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
-        LEFT JOIN cargo.aggregates ra
-          ON rae.aggregate_cid = ra.aggregate_cid AND ra.metadata->>'RecordType' = 'DagAggregate UnixFS'
       WHERE
         r.ref_v1 = ds.cid_v1
           AND
-        ra.aggregate_cid IS NULL
+        rae.aggregate_cid IS NULL
     )
 $$;

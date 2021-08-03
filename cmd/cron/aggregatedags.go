@@ -139,23 +139,15 @@ var aggregateDags = &cli.Command{
 					FROM cargo.dag_sources ds
 					JOIN cargo.sources s USING ( srcid )
 					JOIN cargo.dags d USING ( cid_v1 )
+					LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
 				WHERE
 					d.size_actual IS NOT NULL AND d.size_actual <= %[1]d -- only pinned entries (FIXME for now do not deal with oversizes/that comes later)
 						AND
-					COALESCE( s.weight, 100 ) >= 0
+					( s.weight >= 0 OR s.weight IS NULL )
 						AND
 					ds.entry_removed IS NULL
 						AND
-					NOT EXISTS (
-						SELECT 42
-							FROM cargo.aggregate_entries ae, cargo.aggregates a
-						WHERE
-							ae.cid_v1 = ds.cid_v1
-								AND
-							ae.aggregate_cid = a.aggregate_cid
-								AND
-							a.metadata->>'RecordType' = '%[2]s'
-					)
+					ae.cid_v1 IS NULL
 				GROUP BY ds.srcid, weight
 			)
 			SELECT
@@ -167,6 +159,8 @@ var aggregateDags = &cli.Command{
 				FROM cargo.dag_sources ds
 				JOIN cargo.dags d USING ( cid_v1 )
 				JOIN available_sources s USING ( srcid )
+				-- not yet aggregated anti-join (IS NULL below)
+				LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
 			WHERE
 				ds.entry_removed IS NULL
 					AND
@@ -174,56 +168,43 @@ var aggregateDags = &cli.Command{
 				d.size_actual IS NOT NULL AND d.size_actual <= %[1]d
 					AND
 				-- not yet aggregated
-				NOT EXISTS (
-					SELECT 42
-						FROM cargo.aggregate_entries ae, cargo.aggregates a
-					WHERE
-						ae.cid_v1 = d.cid_v1
-							AND
-						ae.aggregate_cid = a.aggregate_cid
-							AND
-						a.metadata->>'RecordType' =  '%[2]s'
-				)
+				ae.cid_v1 IS NULL
 					AND
 				-- exclude members of something else *that is subject to aggregation*
 				NOT EXISTS (
 					SELECT 42
 						FROM cargo.refs r
-						JOIN cargo.dag_sources rds
-							ON r.cid_v1 = rds.cid_v1 AND rds.srcid IN ( SELECT srcid FROM available_sources )
-						LEFT JOIN cargo.aggregate_entries rae
-							ON r.cid_v1 = rae.cid_v1
-						LEFT JOIN cargo.aggregates ra
-							ON rae.aggregate_cid = ra.aggregate_cid AND ra.metadata->>'RecordType' = '%[2]s'
+						JOIN cargo.dag_sources rds USING ( cid_v1 )
+						JOIN available_sources asrc USING ( srcid )
+						LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
 					WHERE
 						r.ref_v1 = d.cid_v1
 							AND
-						ra.aggregate_cid IS NULL
+						rae.aggregate_cid IS NULL
 				)
 					AND
 				-- give enough time for metadata/containing dags to trickle in too, allowing for outages
 				(
-					ds.entry_created < ( NOW() - '%[3]s'::INTERVAL )
+					ds.entry_created < ( NOW() - '%[2]s'::INTERVAL )
 						OR
 					EXISTS (
 						SELECT 42
-						FROM cargo.refs sr, cargo.dag_sources sds
+							FROM cargo.refs sr
+							JOIN cargo.dag_sources sds
+								ON sr.ref_v1 = sds.cid_v1 AND ds.srcid = sds.srcid
 						WHERE
 							ds.cid_v1 = sr.cid_v1
 								AND
-							sr.ref_v1 = sds.cid_v1
-								AND
-							ds.srcid = sds.srcid
-								AND
-							sds.entry_created < ( NOW() - '%[3]s'::INTERVAL )
+							sds.entry_created < ( NOW() - '%[2]s'::INTERVAL )
 					)
 				)
 			ORDER BY s.weight DESC, s.oldest_unaggregated, s.srcid, d.size_actual DESC, d.cid_v1
 			`,
 			targetMaxSize,
-			aggregateType,
 			fmt.Sprintf("%d hours", settleDelayHours),
 		)
+
+		// fmt.Println(masterListSQL)
 
 		var rows pgx.Rows
 		if !captureAggregateCandidatesSnapshot {
