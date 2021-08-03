@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -24,14 +25,11 @@ import (
 	"golang.org/x/xerrors"
 )
 
-const (
-	faunaPageSize = 99_999
-)
-
 var (
+	db *pgxpool.Pool // singleton populated in urfaveCLIs Before()
+
 	log          = logging.Logger(fmt.Sprintf("dagcargo-cron(%d)", os.Getpid()))
 	showProgress = isatty.IsTerminal(os.Stderr.Fd())
-	db           *pgxpool.Pool
 )
 
 func init() {
@@ -43,6 +41,37 @@ func cidv1(c cid.Cid) cid.Cid {
 		return c
 	}
 	return cid.NewCidV1(c.Type(), c.Hash())
+}
+
+func cidListFromQuery(ctx context.Context, sql string, args ...interface{}) (map[cid.Cid]struct{}, error) {
+	cidList := make(map[cid.Cid]struct{}, 1<<10)
+
+	rows, err := db.Query(
+		ctx,
+		sql,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var cidStr string
+	for rows.Next() {
+		if err = rows.Scan(&cidStr); err != nil {
+			return nil, err
+		}
+		c, err := cid.Parse(cidStr)
+		if err != nil {
+			return nil, err
+		}
+		cidList[cidv1(c)] = struct{}{}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return cidList, nil
 }
 
 func mainnetTime(filEpoch int64) time.Time { return time.Unix(filEpoch*30+1598306400, 0) }

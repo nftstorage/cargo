@@ -50,6 +50,11 @@ type dagsQuery struct {
 				CidString string `graphql:"cid"`
 				Created   time.Time
 				DagSize   int64
+				Pins      struct {
+					Data []struct {
+						Status string
+					}
+				}
 			}
 			User struct {
 				UserID  string `graphql:"_id"`
@@ -66,9 +71,9 @@ var getNewDags = &cli.Command{
 	Name:  "get-new-dags",
 	Flags: []cli.Flag{
 		&cli.UintFlag{
-			Name:  "skip-dags-aged",
-			Usage: "Query the states of DAGs last changed within that many days",
-			Value: 5,
+			Name:  "skip-uploads-aged",
+			Usage: "Query the states of uploads last changed within that many days",
+			Value: 3,
 		},
 	},
 	Action: func(cctx *cli.Context) error {
@@ -76,28 +81,28 @@ var getNewDags = &cli.Command{
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
 
-		// need a list so we can filter them out
-		ownAggregates := make(map[string]struct{}, 1<<10)
-		rows, err := db.Query(
+		// Sometimes we end up pinning something before cluster reports it as such
+		// ( or we had something from a different sourec )
+		// Grab a list so we do not turn away folks we definitely can serve
+		availableCids, err := cidListFromQuery(
+			ctx,
+			`SELECT cid_v1 FROM cargo.dags WHERE size_actual IS NOT NULL`,
+		)
+		if err != nil {
+			return err
+		}
+
+		// Need that list so we can filter them out
+		ownAggregates, err := cidListFromQuery(
 			ctx,
 			`SELECT aggregate_cid FROM cargo.aggregates`,
 		)
 		if err != nil {
 			return err
 		}
-		var agg string
-		for rows.Next() {
-			if err = rows.Scan(&agg); err != nil {
-				return err
-			}
-			ownAggregates[agg] = struct{}{}
-		}
-		if err := rows.Err(); err != nil {
-			return err
-		}
 
 		for pID := range faunaProjects {
-			if err := getProjectDags(cctx, pID, ownAggregates); err != nil {
+			if err := getProjectDags(cctx, pID, availableCids, ownAggregates); err != nil {
 				return err
 			}
 		}
@@ -106,18 +111,27 @@ var getNewDags = &cli.Command{
 	},
 }
 
-func getProjectDags(cctx *cli.Context, projectNum int, ownAggregates map[string]struct{}) error {
+func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggregates map[cid.Cid]struct{}) error {
+
+	cutoff := time.Now().Add(time.Hour * -24 * time.Duration(cctx.Uint("skip-uploads-aged")))
 
 	var newSources, totalQueryDags, newDags, removedDags int
 	defer func() {
 		log.Infow("summary",
 			"project", faunaProjects[projectNum],
+			"queryPeriodSince", cutoff,
 			"totalQueryPeriodDags", totalQueryDags,
 			"newSources", newSources,
 			"newDags", newDags,
 			"removedDags", removedDags,
 		)
 	}()
+
+	// Theoretically one has a limit of 100k entries per page: that number won't work:
+	//     Transaction does too much compute: got 12479, limit: 12000
+	//
+	// faunaPageSize = 99_999
+	faunaPageSize := 9_999
 
 	gql, err := faunaClient(cctx, faunaProjects[projectNum])
 	if err != nil {
@@ -129,7 +143,7 @@ func getProjectDags(cctx *cli.Context, projectNum int, ownAggregates map[string]
 		if err := gql.Query(cctx.Context, &resultPage, map[string]interface{}{
 			"page_size":       graphql.Int(faunaPageSize),
 			"cursor_position": cursorNext,
-			"since":           time.Now().Add(time.Hour * -24 * time.Duration(cctx.Uint("skip-dags-aged"))),
+			"since":           cutoff,
 		}); err != nil {
 			return err
 		}
@@ -137,6 +151,30 @@ func getProjectDags(cctx *cli.Context, projectNum int, ownAggregates map[string]
 		seenSources := make(map[string]int64)
 
 		for _, d := range resultPage.FindUploadsCreatedAfter.Data {
+
+			c, err := cid.Parse(d.Content.CidString)
+			if err != nil {
+				return err
+			}
+
+			// why would anyone be so mean?
+			if _, own := ownAggregates[cidv1(c)]; own {
+				continue
+			}
+
+			// we might already have the CID - amount of pins not relevant
+			if _, avail := availableDags[cidv1(c)]; !avail {
+				// Only consider things with at least one `Pinned` state
+				// everything else may or may not be bogus
+				pinStates := make(map[string]int)
+				for _, p := range d.Content.Pins.Data {
+					pinStates[p.Status]++
+				}
+				if pinStates["Pinned"] == 0 {
+					// we are unlikely to find the data for this
+					continue
+				}
+			}
 
 			totalQueryDags++
 
@@ -179,15 +217,6 @@ func getProjectDags(cctx *cli.Context, projectNum int, ownAggregates map[string]
 				}
 
 				seenSources[d.User.UserID] = srcid
-			}
-
-			c, err := cid.Parse(d.Content.CidString)
-			if err != nil {
-				return err
-			}
-
-			if _, known := ownAggregates[c.String()]; known {
-				continue
 			}
 
 			em := dagSourceEntryMeta{
