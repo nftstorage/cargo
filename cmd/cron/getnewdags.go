@@ -249,7 +249,7 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 			err = db.QueryRow(
 				cctx.Context,
 				`
-				INSERT INTO cargo.dag_sources ( cid_v1, entry_id, srcid, details, entry_created, entry_removed ) VALUES ( $1, $2, $3, $4, $5, $6 )
+				INSERT INTO cargo.dag_sources ( cid_v1, source_key, srcid, details, entry_created, entry_removed ) VALUES ( $1, $2, $3, $4, $5, $6 )
 					ON CONFLICT ON CONSTRAINT singleton_dag_source_record DO UPDATE SET
 						entry_removed = $6
 				RETURNING (xmax = 0), entry_last_updated

@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS cargo.sources (
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL,
   CONSTRAINT singleton_source_record UNIQUE ( source, project )
 );
+CREATE INDEX IF NOT EXISTS sources_weight ON cargo.sources ( weight );
 CREATE TRIGGER trigger_dag_update_on_related_source_insert_delete
   AFTER INSERT OR DELETE ON cargo.sources
   FOR EACH ROW
@@ -116,16 +117,17 @@ CREATE TRIGGER trigger_dag_update_on_related_source_change
 CREATE TABLE IF NOT EXISTS cargo.dag_sources (
   srcid BIGINT NOT NULL REFERENCES cargo.sources ( srcid ),
   cid_v1 TEXT NOT NULL REFERENCES cargo.dags ( cid_v1 ),
-  entry_id TEXT NOT NULL,
+  source_key TEXT NOT NULL,
   details JSONB,
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
   entry_last_updated TIMESTAMP WITH TIME ZONE NOT NULL,
   entry_removed TIMESTAMP WITH TIME ZONE,
   entry_last_exported TIMESTAMP WITH TIME ZONE,
-  CONSTRAINT singleton_dag_source_record UNIQUE ( srcid, entry_id )
+  CONSTRAINT singleton_dag_source_record UNIQUE ( srcid, source_key )
 );
 CREATE INDEX IF NOT EXISTS dag_sources_cidv1_idx ON cargo.dag_sources ( cid_v1 );
 CREATE INDEX IF NOT EXISTS dag_sources_entry_removed ON cargo.dag_sources ( entry_removed );
+CREATE INDEX IF NOT EXISTS dag_sources_entry_created ON cargo.dag_sources ( entry_created );
 CREATE TRIGGER trigger_dag_source_insert
   BEFORE INSERT ON cargo.dag_sources
   FOR EACH ROW
@@ -143,7 +145,7 @@ CREATE TRIGGER trigger_dag_source_updated
   EXECUTE PROCEDURE cargo.update_entry_timestamp()
 ;
 CREATE TRIGGER trigger_dag_update_on_related_sources
-  AFTER UPDATE OF entry_id, entry_removed ON cargo.dag_sources
+  AFTER UPDATE OF source_key, entry_removed ON cargo.dag_sources
   FOR EACH ROW
   WHEN (OLD IS DISTINCT FROM NEW)
   EXECUTE PROCEDURE cargo.update_parent_dag_timestamp()
@@ -163,7 +165,7 @@ CREATE TABLE IF NOT EXISTS cargo.aggregates (
 CREATE TABLE IF NOT EXISTS cargo.aggregate_entries (
   aggregate_cid TEXT NOT NULL REFERENCES cargo.aggregates ( aggregate_cid ),
   cid_v1 TEXT NOT NULL REFERENCES cargo.dags ( cid_v1 ),
-  datamodel_selector TEXT,
+  datamodel_selector TEXT NOT NULL,
   CONSTRAINT singleton_aggregate_entry UNIQUE ( cid_v1, aggregate_cid )
 );
 CREATE INDEX IF NOT EXISTS aggregate_entries_aggregate_cid ON cargo.aggregate_entries ( aggregate_cid );
@@ -247,7 +249,7 @@ CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
     SELECT MAX(entry_last_updated) AS ts FROM cargo.dags WHERE size_actual IS NOT NULL
   )
   SELECT
-      ds.entry_id,
+      ds.source_key,
       ds.srcid,
       ds.entry_created,
       ( ds.entry_removed IS NOT NULL ) as is_tombstone

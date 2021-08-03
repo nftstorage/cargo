@@ -241,7 +241,9 @@ var aggregateDags = &cli.Command{
 				return err
 			}
 
-			forceTimeboxedAggregation = forceTimeboxedAggregation || (pending.firstSeen.Before(forceCutoff))
+			if forceAgeHours > 0 {
+				forceTimeboxedAggregation = forceTimeboxedAggregation || (pending.firstSeen.Before(forceCutoff))
+			}
 
 			statsSources[pending.srcid] = struct{}{}
 			if _, existing := statsDags[pending.aggentry.RootCid.String()]; existing {
@@ -882,7 +884,7 @@ watchdog:
 	if _, dbErr = tx.Exec(
 		ctx,
 		`
-		INSERT INTO cargo.aggregates ( "aggregate_cid", "piece_cid", "sha256hex", "payload_size", "metadata" )
+		INSERT INTO cargo.aggregates ( "aggregate_cid", "piece_cid", "sha256hex", "export_size", "metadata" )
 			VALUES ( $1, $2, $3, $4, $5 )
 		ON CONFLICT DO NOTHING
 		`,

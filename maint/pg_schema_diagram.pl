@@ -19,6 +19,23 @@ use SQL::Translator;
 
 $SIG{__WARN__} = sigwarn_silencer(qr/collides with an inherited method/);
 
+{
+  no warnings 'redefine';
+  *SQL::Translator::Schema::add_view = sub {
+    my $s = shift;
+    my %args = @_;
+    my $t = $s->add_table(%args);
+    $t->add_field(
+      name => $_,
+      size => 0,
+      is_auto_increment => 0,
+      is_foreign_key => 0,
+      is_nullable => 0,
+    ) for @{$args{fields}};
+    return $t;
+  };
+}
+
 my $trans = SQL::Translator->new(
     parser        => 'SQL::Translator::Parser::DBIx::Class',
     parser_args   => { dbic_schema => GraphedSchema->connect('dbi:Pg:service=cargo', 'cargo') },
