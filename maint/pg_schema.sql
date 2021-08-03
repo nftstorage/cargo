@@ -251,10 +251,9 @@ CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
       ds.srcid,
       ds.entry_created,
       ( ds.entry_removed IS NOT NULL ) as is_tombstone
-    FROM cargo.dag_sources ds, cargo.dags d
+    FROM cargo.dag_sources ds
+    JOIN cargo.dags d USING ( cid_v1 )
   WHERE
-    ds.cid_v1 = d.cid_v1
-      AND
     d.size_actual IS NULL
       AND
     d.entry_created < ( SELECT ts - '30 minutes'::INTERVAL FROM latest_pin_run )
@@ -368,7 +367,7 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
   FROM summary su
   JOIN cargo.sources s USING ( srcid )
   LEFT JOIN summary_unaggregated unagg USING ( srcid )
-  ORDER BY (unagg.bytes_total > 0 ), weight DESC NULLS FIRST, unagg.bytes_total DESC NULLS LAST, su.srcid
+  ORDER BY (unagg.bytes_total > 0 ), weight DESC NULLS FIRST, unagg.bytes_total DESC NULLS LAST, su.bytes_total DESC NULLS FIRST, su.srcid
 );
 
 CREATE OR REPLACE

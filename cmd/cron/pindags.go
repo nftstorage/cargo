@@ -51,7 +51,22 @@ var pinDags = &cli.Command{
 				entry_last_updated > ( NOW() - $1::INTERVAL )
 					AND
 				EXISTS ( SELECT 42 FROM cargo.dag_sources ds WHERE d.cid_v1 = ds.cid_v1 AND ds.entry_removed IS NULL )
-			ORDER BY entry_created DESC -- ensure newest arrivals are attempted first
+				--	AND
+				-- EXISTS (
+				--	SELECT 42
+				--		FROM cargo.dag_sources ds JOIN cargo.sources s USING ( srcid )
+				--	WHERE
+				--		d.cid_v1 = ds.cid_v1
+				--			AND
+				--		( s.weight IS NULL OR s.weight >= 0 )
+				-- )
+			ORDER BY
+				(
+					SELECT MAX(s.weight)
+						FROM cargo.dag_sources ds JOIN cargo.sources s USING ( srcid )
+					WHERE d.cid_v1 = ds.cid_v1
+				) NULLS FIRST,
+				entry_created DESC -- ensure newest arrivals are attempted first
 			`,
 			fmt.Sprintf("%d days", cctx.Uint("skip-dags-aged")),
 		)
