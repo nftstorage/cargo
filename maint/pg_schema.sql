@@ -244,22 +244,44 @@ CREATE INDEX IF NOT EXISTS deal_events_deal_id ON cargo.deal_events ( deal_id );
 
 
 CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
-  WITH
-  latest_pin_run AS (
-    SELECT MAX(entry_last_updated) AS ts FROM cargo.dags WHERE size_actual IS NOT NULL
-  )
-  SELECT
-      ds.source_key,
-      ds.srcid,
-      ds.entry_created,
-      ( ds.entry_removed IS NOT NULL ) as is_tombstone
-    FROM cargo.dag_sources ds
-    JOIN cargo.dags d USING ( cid_v1 )
-  WHERE
-    d.size_actual IS NULL
-      AND
-    d.entry_created < ( SELECT ts - '30 minutes'::INTERVAL FROM latest_pin_run )
-  ORDER BY ds.srcid, d.entry_created DESC
+
+  SELECT * FROM (
+
+    SELECT
+        s.project,
+        ds.cid_v1,
+        ds.source_key,
+        ds.srcid,
+        ds.entry_created,
+        ( ds.entry_removed IS NOT NULL ) AS is_tombstone,
+        ds.details
+      FROM cargo.dag_sources ds
+      JOIN cargo.dags d USING ( cid_v1 )
+      JOIN cargo.sources s USING ( srcid )
+    WHERE
+      d.size_actual IS NULL
+
+          UNION ALL
+
+    SELECT
+        s.project,
+        ds.cid_v1,
+        ds.source_key,
+        ( SELECT srcid FROM cargo.sources ss WHERE ss.project = s.project AND ss.source = REPLACE( ds.details->>'upload_type', 'Redirect from user ', '') ) AS srcid,
+        ds.entry_created,
+        false AS is_tombstone,
+        ds.details
+      FROM cargo.dag_sources ds
+      JOIN cargo.dags d USING ( cid_v1 )
+      JOIN cargo.sources s USING ( srcid )
+    WHERE
+      d.size_actual IS NULL
+        AND
+      s.source = 'INTERNAL SYSTEM USER'
+        AND
+      ds.details->>'upload_type' LIKE 'Redirect from user%'
+  ) u
+  ORDER BY project, srcid, entry_created DESC
 );
 
 CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
@@ -269,7 +291,7 @@ CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
       srcid,
       COUNT(*) AS count_missing,
       MIN( entry_created ) AS oldest_missing,
-      MAX( entry_created) AS newest_missing
+      MAX( entry_created ) AS newest_missing
     FROM cargo.dags_missing_list
     WHERE NOT is_tombstone
     GROUP BY srcid

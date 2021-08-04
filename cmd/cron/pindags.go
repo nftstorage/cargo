@@ -41,25 +41,42 @@ var pinDags = &cli.Command{
 		cctx.Context, closer = context.WithCancel(cctx.Context)
 		defer closer()
 
-		pinsToDo := make(map[cid.Cid]struct{}, 2048)
+		var res struct{ Keys map[string]ipfsapi.PinInfo }
+		if err := ipfsAPI(cctx).Request("pin/ls").Option("type", "recursive").Option("quiet", "true").Exec(cctx.Context, &res); err != nil {
+			return err
+		}
+		systemPins := make(map[cid.Cid]struct{}, len(res.Keys))
+		for cidStr := range res.Keys {
+			c, err := cid.Parse(cidStr)
+			if err != nil {
+				return err
+			}
+			systemPins[cidv1(c)] = struct{}{}
+		}
+
+		pinsSeen := cid.NewSet()
+		pinsTodo := make([]cid.Cid, 0, 256<<10)
 		rows, err := db.Query(
 			cctx.Context,
 			`
-			SELECT cid_v1 FROM cargo.dags d WHERE
+			SELECT
+					cid_v1,
+					EXISTS (
+						SELECT 42
+							FROM cargo.dag_sources ds
+							JOIN cargo.sources s USING ( srcid )
+						WHERE
+							d.cid_v1 = ds.cid_v1
+								AND
+							ds.entry_removed IS NULL
+								AND
+							( s.weight IS NULL OR s.weight >= 0 )
+					)
+				FROM cargo.dags d
+			WHERE
 				size_actual IS NULL
 					AND
 				entry_last_updated > ( NOW() - $1::INTERVAL )
-					AND
-				EXISTS ( SELECT 42 FROM cargo.dag_sources ds WHERE d.cid_v1 = ds.cid_v1 AND ds.entry_removed IS NULL )
-				--	AND
-				-- EXISTS (
-				--	SELECT 42
-				--		FROM cargo.dag_sources ds JOIN cargo.sources s USING ( srcid )
-				--	WHERE
-				--		d.cid_v1 = ds.cid_v1
-				--			AND
-				--		( s.weight IS NULL OR s.weight >= 0 )
-				-- )
 			ORDER BY
 				(
 					SELECT MAX(s.weight)
@@ -73,16 +90,27 @@ var pinDags = &cli.Command{
 		if err != nil {
 			return err
 		}
+
+		var alreadyKnown int64
 		var cidStr string
+		var srcActive bool
 		for rows.Next() {
-			if err = rows.Scan(&cidStr); err != nil {
+			if err = rows.Scan(&cidStr, &srcActive); err != nil {
 				return err
 			}
 			c, err := cid.Parse(cidStr)
 			if err != nil {
 				return err
 			}
-			pinsToDo[c] = struct{}{}
+
+			if _, found := systemPins[c]; found || srcActive {
+				if pinsSeen.Visit(c) {
+					pinsTodo = append(pinsTodo, c)
+					if found {
+						alreadyKnown++
+					}
+				}
+			}
 		}
 		if err := rows.Err(); err != nil {
 			return err
@@ -97,6 +125,8 @@ var pinDags = &cli.Command{
 
 		defer func() {
 			log.Infow("summary",
+				"totalSystemPins", len(systemPins),
+				"preexisting", alreadyKnown,
 				"pinned", atomic.LoadUint64(total.pinned),
 				"failed", atomic.LoadUint64(total.failed),
 				"referencedBlocks", atomic.LoadUint64(total.refs),
@@ -104,7 +134,7 @@ var pinDags = &cli.Command{
 			)
 		}()
 
-		maxWorkers := len(pinsToDo)
+		maxWorkers := len(pinsTodo)
 		if maxWorkers == 0 {
 			return nil
 		} else if maxWorkers > cctx.Int("ipfs-api-max-workers") {
@@ -114,7 +144,7 @@ var pinDags = &cli.Command{
 		toPinCh := make(chan cid.Cid, 2*maxWorkers)
 		errCh := make(chan error, 1+maxWorkers)
 
-		log.Infof("about to pin and analyze %d dags", len(pinsToDo))
+		log.Infof("about to analyze/pin %d dags", len(pinsTodo))
 
 		go func() {
 			defer close(toPinCh) // signal to workers to quit
@@ -128,7 +158,7 @@ var pinDags = &cli.Command{
 			}
 
 			lastPct := uint64(101)
-			for c := range pinsToDo {
+			for _, c := range pinsTodo {
 				select {
 				case toPinCh <- c:
 					// feeder
@@ -136,7 +166,7 @@ var pinDags = &cli.Command{
 					errCh <- cctx.Context.Err()
 					return
 				case <-progressTick:
-					curPct := 100 * atomic.LoadUint64(total.pinned) / uint64(len(pinsToDo))
+					curPct := 100 * (atomic.LoadUint64(total.failed) + atomic.LoadUint64(total.pinned)) / uint64(len(pinsTodo))
 					if curPct != lastPct {
 						lastPct = curPct
 						fmt.Fprintf(os.Stderr, "%d%%\r", lastPct)
@@ -222,10 +252,15 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) 
 
 	err = api.Request("pin/add").Arguments(rootCid.String()).Exec(cctx.Context, nil)
 
-	// If we fail to even pin - quietly move on without an error ( we didn't write anything to the DB yet )
+	// If we fail to even pin: move on without an error ( we didn't write anything to the DB yet )
 	if err != nil {
-		log.Debugf("failure to pin %s: %s", rootCid, err)
 		atomic.AddUint64(total.failed, 1)
+		msg := fmt.Sprintf("failure to pin %s: %s", rootCid, err)
+		if ue, castOk := err.(*url.Error); castOk && ue.Timeout() {
+			log.Debug(msg)
+		} else {
+			log.Error(msg)
+		}
 		return nil
 	}
 

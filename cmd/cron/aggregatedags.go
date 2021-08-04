@@ -682,7 +682,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	aggLabel := fmt.Sprintf("aggregate %s dagcount [%d]%d",
 		res.carRoot,
 		len(initialRoots),
-		len(toAgg),
+		len(res.manifestEntries),
 	)
 
 	//
@@ -693,7 +693,10 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	}
 
 	//
-	log.Infof("%s: pinning, writing out car file, calculating commP and sha256", aggLabel)
+	log.Infof("%s: pinning, writing out projected %s bytes as car export, calculating commP and sha256",
+		aggLabel,
+		humanize.Comma(int64(projectedSize)),
+	)
 
 	carTmpFile, realFile, err := tmpfile.TempFile(outDir)
 	if err != nil {

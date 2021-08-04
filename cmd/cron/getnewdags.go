@@ -17,9 +17,10 @@ var faunaProjects = map[int]string{
 
 // these two are the structs placed in the corresponding `details` JSONB
 type dagSourceEntryMeta struct {
-	Label      string       `json:"label,omitempty"`
-	UploadType string       `json:"upload_type,omitempty"`
-	TokenUsed  *sourceToken `json:"token_used,omitempty"`
+	Label       string       `json:"label,omitempty"`
+	UploadType  string       `json:"upload_type,omitempty"`
+	TokenUsed   *sourceToken `json:"token_used,omitempty"`
+	ClaimedSize int64        `json:"claimed_size,omitempty,string"`
 }
 type dagSourceMeta struct {
 	Github        string `json:"github,omitempty"`
@@ -34,6 +35,12 @@ type dagSourceMeta struct {
 type sourceToken struct {
 	ID    string `graphql:"_id" json:"id,omitempty"`
 	Label string `graphql:"name" json:"label,omitempty"`
+}
+
+type user struct {
+	UserID  string `graphql:"_id"`
+	Created time.Time
+	dagSourceMeta
 }
 
 // query/result for grabbing updates
@@ -56,14 +63,19 @@ type dagsQuery struct {
 					}
 				}
 			}
-			User struct {
-				UserID  string `graphql:"_id"`
-				Created time.Time
-				dagSourceMeta
-			}
+			User      user
 			AuthToken sourceToken
 		}
 	} `graphql:"findUploadsCreatedAfter (since: $since _cursor: $cursor_position _size: $page_size)"`
+}
+
+var sysUserTime, _ = time.Parse("2006-01-02", "2021-08-01")
+var sysUser = user{
+	dagSourceMeta: dagSourceMeta{
+		Name: "INTERNAL SYSTEM USER",
+	},
+	UserID:  "INTERNAL SYSTEM USER",
+	Created: sysUserTime,
 }
 
 var getNewDags = &cli.Command{
@@ -115,7 +127,7 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 
 	cutoff := time.Now().Add(time.Hour * -24 * time.Duration(cctx.Uint("skip-uploads-aged")))
 
-	var newSources, totalQueryDags, newDags, removedDags int
+	var newSources, totalQueryDags, newDags, newPending, removedDags int
 	defer func() {
 		log.Infow("summary",
 			"project", faunaProjects[projectNum],
@@ -123,6 +135,7 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 			"totalQueryPeriodDags", totalQueryDags,
 			"newSources", newSources,
 			"newDags", newDags,
+			"newPendingDags", newPending,
 			"removedDags", removedDags,
 		)
 	}()
@@ -162,21 +175,29 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 				continue
 			}
 
+			totalQueryDags++
+			var isPendging bool
+
 			// we might already have the CID - amount of pins not relevant
 			if _, avail := availableDags[cidv1(c)]; !avail {
+
 				// Only consider things with at least one `Pinned` state
 				// everything else may or may not be bogus
 				pinStates := make(map[string]int)
 				for _, p := range d.Content.Pins.Data {
 					pinStates[p.Status]++
 				}
+
 				if pinStates["Pinned"] == 0 {
 					// we are unlikely to find the data for this
-					continue
+					// but we also want to register it *in case* things show up later
+					// to do that we swapout the user and proceed
+					isPendging = true
+					d.Type = "Redirect from user " + d.User.UserID
+					d.AuthToken = sourceToken{}
+					d.User = sysUser
 				}
 			}
-
-			totalQueryDags++
 
 			if _, known := seenSources[d.User.UserID]; !known {
 				sourceMeta, err := json.Marshal(dagSourceMeta{
@@ -220,8 +241,9 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 			}
 
 			em := dagSourceEntryMeta{
-				Label:      d.Name,
-				UploadType: d.Type,
+				Label:       d.Name,
+				UploadType:  d.Type,
+				ClaimedSize: d.Content.DagSize,
 			}
 			if d.AuthToken.ID != "" {
 				em.TokenUsed = &d.AuthToken
@@ -251,6 +273,8 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 				`
 				INSERT INTO cargo.dag_sources ( cid_v1, source_key, srcid, details, entry_created, entry_removed ) VALUES ( $1, $2, $3, $4, $5, $6 )
 					ON CONFLICT ON CONSTRAINT singleton_dag_source_record DO UPDATE SET
+						details = $4,
+						entry_created = $5,
 						entry_removed = $6
 				RETURNING (xmax = 0), entry_last_updated
 				`,
@@ -268,7 +292,11 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 			if d.Deleted != nil && time.Since(entryLastUpdate) < 5*time.Second {
 				removedDags++
 			} else if isNew {
-				newDags++
+				if isPendging {
+					newPending++
+				} else {
+					newDags++
+				}
 			}
 		}
 
