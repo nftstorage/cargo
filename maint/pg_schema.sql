@@ -367,6 +367,8 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
               AND
             rds.srcid = ds.srcid
               AND
+            rds.entry_removed IS NULL
+              AND
             rae.aggregate_cid IS NULL
         )
       GROUP BY srcid
@@ -417,9 +419,12 @@ AS $$
     NOT EXISTS (
       SELECT 42
         FROM cargo.refs r
+        JOIN cargo.dag_sources rds USING ( cid_v1 )
         LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
       WHERE
         r.ref_v1 = ds.cid_v1
+          AND
+        rds.entry_removed IS NULL
           AND
         rae.aggregate_cid IS NULL
     )

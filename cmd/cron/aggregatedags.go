@@ -180,6 +180,8 @@ var aggregateDags = &cli.Command{
 					WHERE
 						r.ref_v1 = d.cid_v1
 							AND
+						rds.entry_removed IS NULL
+							AND
 						rae.aggregate_cid IS NULL
 				)
 					AND
@@ -482,9 +484,24 @@ var aggregateDags = &cli.Command{
 					LEFT JOIN cargo.deals de -- this inflates the replica_count, conflating 0 with 1 ( always 1 ), which is ok
 						ON de.aggregate_cid = ae.aggregate_cid AND de.status != 'terminated'
 				WHERE
-					r.ref_v1 IS NULL -- not part of something else
+					-- not part of anything else
+					r.ref_v1 IS NULL
 						AND
-					d.size_actual < $1 -- don't go with big dags, don't risk it
+					-- don't go with big dags, don't risk it
+					d.size_actual IS NOT NULL AND d.size_actual < $1
+						AND
+					-- do not republish deleted/deprioritized dags
+					EXISTS (
+						SELECT 42
+							FROM cargo.dag_sources ds
+							JOIN cargo.sources s USING ( srcid )
+						WHERE
+							d.cid_v1 = ds.cid_v1
+								AND
+							ds.entry_removed IS NULL
+								AND
+							( s.weight IS NULL OR s.weight >= 0 )
+					)
 				GROUP BY ( ae.cid_v1, d.size_actual )
 				ORDER BY replica_count
 				LIMIT $2
