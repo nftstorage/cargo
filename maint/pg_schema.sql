@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS cargo.sources (
   CONSTRAINT singleton_source_record UNIQUE ( source, project )
 );
 CREATE INDEX IF NOT EXISTS sources_weight ON cargo.sources ( weight );
+CREATE INDEX IF NOT EXISTS sources_project ON cargo.sources ( project );
 CREATE TRIGGER trigger_dag_update_on_related_source_insert_delete
   AFTER INSERT OR DELETE ON cargo.sources
   FOR EACH ROW
@@ -281,6 +282,7 @@ CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
         AND
       ds.details->>'upload_type' LIKE 'Redirect from user%'
   ) u
+
   ORDER BY project, srcid, entry_created DESC
 );
 
@@ -313,7 +315,7 @@ CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
   )
   SELECT *, ( 100 * count_missing::NUMERIC / count_total::NUMERIC )::NUMERIC(5,2) AS pct_missing
     FROM source_details
-  ORDER BY count_missing DESC, srcid
+  ORDER BY weight DESC NULLS FIRST, count_missing DESC, srcid
 );
 
 CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
@@ -391,7 +393,7 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
   FROM summary su
   JOIN cargo.sources s USING ( srcid )
   LEFT JOIN summary_unaggregated unagg USING ( srcid )
-  ORDER BY (unagg.bytes_total > 0 ), weight DESC NULLS FIRST, unagg.bytes_total DESC NULLS LAST, su.bytes_total DESC NULLS FIRST, su.srcid
+  ORDER BY (unagg.bytes_total > 0 ), weight DESC NULLS FIRST, unagg.bytes_total DESC NULLS LAST, su.bytes_total DESC NULLS FIRST, s.project, su.srcid
 );
 
 CREATE OR REPLACE

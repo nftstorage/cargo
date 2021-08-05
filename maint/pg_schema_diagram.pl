@@ -47,7 +47,7 @@ my $trans = SQL::Translator->new(
         out_file         => 'pg_schema_diagram.svg',
         show_constraints => 1,
         show_datatypes   => 1,
-        show_indexes     => 1,
+        show_indexes     => 0, # this doesn't actually work on the loader side
         show_sizes       => 1,
     },
 ) or die SQL::Translator->error;

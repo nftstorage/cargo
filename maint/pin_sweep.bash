@@ -12,6 +12,7 @@ cids_pending="$(
           entry_created BETWEEN (NOW()-'30 days'::INTERVAL) AND (NOW()-'1 hours'::INTERVAL)
             AND
           EXISTS ( SELECT 42 FROM cargo.dag_sources ds WHERE d.cid_v1 = ds.cid_v1 AND ds.entry_removed IS NULL )
+         -- -- Always poll everything, even if inactive
          --   AND
          -- EXISTS (
          --   SELECT 42
@@ -27,14 +28,17 @@ cids_pending="$(
   | sort -R
 )"
 
-# Force-connect to first random 8k of anything claiming to have our stuff
-echo "$cids_pending" \
-| head -n 8192 \
-| xargs -P 1024 -n1 -I{} bash -c \
-  'curl -m7 -sXPOST "$IPFSAPI/dht/findprovs?numproviders=7&verbose=false&arg={}" | jq -r "select(.Type == 4) | .Responses | .[] | .ID"' \
-| sort -u \
-| sed 's/^/\/p2p\//' \
-| xargs -P 256 -n1 -I{} curl -m35 -sXPOST "$IPFSAPI/swarm/connect?arg={}" >/dev/null
+#### DIsabled until go-ipfs connection issues are fixed
+# # Force-connect to first random 8k of anything claiming to have our stuff
+# echo "$cids_pending" \
+# | head -n 8192 \
+# | xargs -P 1024 -n1 -I{} bash -c \
+#   'curl -m7 -sXPOST "$IPFSAPI/dht/findprovs?numproviders=7&verbose=false&arg={}" | jq -r "select(.Type == 4) | .Responses | .[] | .ID"' \
+# | sort -u \
+# | sed 's/^/\/p2p\//' \
+# | xargs -P 256 -n1 -I{} curl -m35 -sXPOST "$IPFSAPI/swarm/connect?arg={}" >/dev/null
+
+echo "$(date -u): Attempting sweep of $( wc -w <<<"$cids_pending" ) DAGs"
 
 # Now try to gather anything that could have been missed, without a timeout ( timeout comes from caller )
 echo "$cids_pending" \
