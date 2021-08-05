@@ -329,8 +329,6 @@ var aggregateDags = &cli.Command{
 			// we can't find enough to make it worthwhile: close shop until next time
 			if runBytes < targetMinSizeHard ||
 				(!forceTimeboxedAggregation && runBytes < targetMinSizeSoft) {
-				// when we break here, curRoundAgg could contain some pre-made parts
-				// we add that count to the "remaining" stats in the defer higher up
 				break
 			}
 
@@ -891,17 +889,20 @@ watchdog:
 	}
 	root := res.carRoot.String()
 
-	tx, dbErr := db.Begin(ctx)
-	if dbErr != nil {
-		return nil, dbErr
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return nil, err
 	}
 	defer func() {
-		if dbErr != nil {
+		if err == nil {
+			err = ctx.Err()
+		}
+		if err != nil && tx != nil {
 			tx.Rollback(context.Background()) // nolint:errcheck
 		}
 	}()
 
-	if _, dbErr = tx.Exec(
+	if _, err = tx.Exec(
 		ctx,
 		`
 		INSERT INTO cargo.aggregates ( "aggregate_cid", "piece_cid", "sha256hex", "export_size", "metadata" )
@@ -913,8 +914,8 @@ watchdog:
 		fmt.Sprintf("%x", res.carSha256),
 		res.carSize,
 		aggMeta,
-	); dbErr != nil {
-		return nil, dbErr
+	); err != nil {
+		return nil, err
 	}
 
 	links := make([][]interface{}, 0, len(res.manifestEntries))
@@ -925,21 +926,22 @@ watchdog:
 			fmt.Sprintf("Links/%d/Hash/Links/%d/Hash/Links/%d/Hash", e.PathIndexes[0], e.PathIndexes[1], e.PathIndexes[2]),
 		})
 	}
-	if _, dbErr = tx.CopyFrom(
+	if _, err = tx.CopyFrom(
 		ctx,
 		pgx.Identifier{"cargo", "aggregate_entries"},
 		[]string{"aggregate_cid", "cid_v1", "datamodel_selector"},
 		pgx.CopyFromRows(links),
-	); dbErr != nil {
-		return nil, dbErr
+	); err != nil {
+		return nil, err
 	}
 
-	if dbErr = tx.Commit(ctx); err != nil {
-		return nil, dbErr
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 
-	// disarm defer higher up
+	// disarm defers higher up
 	toUnpinOnError = ""
+	tx = nil
 
 	// all done: reify file
 	fn := fmt.Sprintf("%s/%s_%s.car", outDir, root, res.carCommp.String())

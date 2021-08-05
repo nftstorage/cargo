@@ -286,7 +286,7 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 	return nil
 }
 
-func createUser(ctx context.Context, proj int, d dagsQueryResult) (srcid int64, isNew bool, err error) {
+func createUser(ctx context.Context, proj int, d dagsQueryResult) (srcid int64, isNew bool, _ error) {
 
 	sourceMeta, err := json.Marshal(dagSourceMeta{
 		Github:        d.User.Github,

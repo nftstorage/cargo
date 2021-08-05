@@ -229,7 +229,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) 
 
 	defer func() {
 		if err == nil {
-			err = cctx.Err()
+			err = cctx.Context.Err()
 		}
 
 		if err != nil {
@@ -250,10 +250,8 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) 
 		}
 	}()
 
-	err = api.Request("pin/add").Arguments(rootCid.String()).Exec(cctx.Context, nil)
-
-	// If we fail to even pin: move on without an error ( we didn't write anything to the DB yet )
-	if err != nil {
+	if err = api.Request("pin/add").Arguments(rootCid.String()).Exec(cctx.Context, nil); err != nil {
+		// If we fail to even pin: move on without an error ( we didn't write anything to the DB yet )
 		atomic.AddUint64(total.failed, 1)
 		msg := fmt.Sprintf("failure to pin %s: %s", rootCid, err)
 		if ue, castOk := err.(*url.Error); castOk && ue.Timeout() {
@@ -278,8 +276,10 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) 
 
 		refs := make([][]interface{}, 0, 256)
 
-		var resp *ipfsapi.Response
-		resp, err = api.Request("refs").Arguments(rootCid.String()).Option("unique", "true").Option("recursive", "true").Send(cctx.Context)
+		resp, err := api.Request("refs").Arguments(rootCid.String()).Option("unique", "true").Option("recursive", "true").Send(cctx.Context)
+		if err != nil {
+			return err
+		}
 
 		dec := json.NewDecoder(resp.Output)
 		for {
