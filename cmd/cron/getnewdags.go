@@ -47,26 +47,27 @@ type user struct {
 type dagsQuery struct {
 	FindUploadsCreatedAfter struct {
 		CursorNext *string `graphql:"after"`
-		Data       []struct {
-			ID      string `graphql:"_id"`
-			Created time.Time
-			Deleted *time.Time
-			Name    string
-			Type    string
-			Content struct {
-				CidString string `graphql:"cid"`
-				Created   time.Time
-				DagSize   int64
-				Pins      struct {
-					Data []struct {
-						Status string
-					}
-				}
-			}
-			User      user
-			AuthToken sourceToken
-		}
+		Data       []dagsQueryResult
 	} `graphql:"findUploadsCreatedAfter (since: $since _cursor: $cursor_position _size: $page_size)"`
+}
+type dagsQueryResult struct {
+	ID      string `graphql:"_id"`
+	Created time.Time
+	Deleted *time.Time
+	Name    string
+	Type    string
+	Content struct {
+		CidString string `graphql:"cid"`
+		Created   time.Time
+		DagSize   int64
+		Pins      struct {
+			Data []struct {
+				Status string
+			}
+		}
+	}
+	User      user
+	AuthToken sourceToken
 }
 
 var sysUserTime, _ = time.Parse("2006-01-02", "2021-08-01")
@@ -193,6 +194,12 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 					// but we also want to register it *in case* things show up later
 					// to do that we swapout the user and proceed
 					isPendging = true
+
+					// create the user so we do not lose track of them
+					if _, _, err := createUser(cctx.Context, projectNum, d); err != nil {
+						return err
+					}
+
 					d.Type = "Redirect from user " + d.User.UserID
 					d.AuthToken = sourceToken{}
 					d.User = sysUser
@@ -200,43 +207,13 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 			}
 
 			if _, known := seenSources[d.User.UserID]; !known {
-				sourceMeta, err := json.Marshal(dagSourceMeta{
-					Github:        d.User.Github,
-					Name:          d.User.Name,
-					Email:         d.User.Email,
-					PublicAddress: d.User.PublicAddress,
-					Issuer:        d.User.Issuer,
-					Picture:       d.User.Picture,
-					UsedStorage:   d.User.UsedStorage,
-				})
+				srcid, isNew, err := createUser(cctx.Context, projectNum, d)
 				if err != nil {
 					return err
 				}
-
-				var srcid int64
-				var isNew bool
-				err = db.QueryRow(
-					cctx.Context,
-					`
-					INSERT INTO cargo.sources ( project, source, entry_created, details )
-						VALUES ( $1, $2, $3, $4 )
-						ON CONFLICT ( project, source ) DO UPDATE SET
-							details = EXCLUDED.details
-					RETURNING srcid, (xmax = 0)
-					`,
-					projectNum,
-					d.User.UserID,
-					d.User.Created,
-					sourceMeta,
-				).Scan(&srcid, &isNew)
-				if err != nil {
-					return err
-				}
-
 				if isNew {
 					newSources++
 				}
-
 				seenSources[d.User.UserID] = srcid
 			}
 
@@ -307,4 +284,40 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 	}
 
 	return nil
+}
+
+func createUser(ctx context.Context, proj int, d dagsQueryResult) (srcid int64, isNew bool, err error) {
+
+	sourceMeta, err := json.Marshal(dagSourceMeta{
+		Github:        d.User.Github,
+		Name:          d.User.Name,
+		Email:         d.User.Email,
+		PublicAddress: d.User.PublicAddress,
+		Issuer:        d.User.Issuer,
+		Picture:       d.User.Picture,
+		UsedStorage:   d.User.UsedStorage,
+	})
+	if err != nil {
+		return 0, false, err
+	}
+
+	err = db.QueryRow(
+		ctx,
+		`
+		INSERT INTO cargo.sources ( project, source, entry_created, details )
+			VALUES ( $1, $2, $3, $4 )
+			ON CONFLICT ( project, source ) DO UPDATE SET
+				details = EXCLUDED.details
+		RETURNING srcid, (xmax = 0)
+		`,
+		proj,
+		d.User.UserID,
+		d.User.Created,
+		sourceMeta,
+	).Scan(&srcid, &isNew)
+	if err != nil {
+		return 0, false, err
+	}
+
+	return srcid, isNew, nil
 }
