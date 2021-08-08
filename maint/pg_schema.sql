@@ -98,10 +98,10 @@ CREATE TABLE IF NOT EXISTS cargo.sources (
   weight INTEGER CONSTRAINT weight_range CHECK ( weight BETWEEN -99 AND 99 ),
   details JSONB,
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL,
-  CONSTRAINT singleton_source_record UNIQUE ( source, project )
+  CONSTRAINT singleton_source_record UNIQUE ( project, source )
 );
 CREATE INDEX IF NOT EXISTS sources_weight ON cargo.sources ( weight );
-CREATE INDEX IF NOT EXISTS sources_project ON cargo.sources ( project );
+CREATE INDEX IF NOT EXISTS sources_source ON cargo.sources ( source );
 CREATE TRIGGER trigger_dag_update_on_related_source_insert_delete
   AFTER INSERT OR DELETE ON cargo.sources
   FOR EACH ROW
@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS cargo.dag_sources (
 CREATE INDEX IF NOT EXISTS dag_sources_cidv1_idx ON cargo.dag_sources ( cid_v1 );
 CREATE INDEX IF NOT EXISTS dag_sources_entry_removed ON cargo.dag_sources ( entry_removed );
 CREATE INDEX IF NOT EXISTS dag_sources_entry_created ON cargo.dag_sources ( entry_created );
+CREATE INDEX IF NOT EXISTS dag_sources_redirect ON cargo.dag_sources (( details ->> '_lagging_pin_redirect_from_user' ));
 CREATE TRIGGER trigger_dag_source_insert
   BEFORE INSERT ON cargo.dag_sources
   FOR EACH ROW
@@ -246,76 +247,74 @@ CREATE INDEX IF NOT EXISTS deal_events_deal_id ON cargo.deal_events ( deal_id );
 
 CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
 
-  SELECT * FROM (
+  SELECT u.*, s.project, COALESCE( s.weight, 100 ) AS weight
+    FROM (
 
-    SELECT
-        s.project,
-        ds.cid_v1,
-        ds.source_key,
-        ds.srcid,
-        ds.entry_created,
-        ( ds.entry_removed IS NOT NULL ) AS is_tombstone,
-        ds.details
-      FROM cargo.dag_sources ds
-      JOIN cargo.dags d USING ( cid_v1 )
-      JOIN cargo.sources s USING ( srcid )
-    WHERE
-      d.size_actual IS NULL
+      SELECT
+          ds.cid_v1,
+          ds.source_key,
+          ds.srcid,
+          ds.entry_created,
+          ds.entry_removed,
+          ( ds.entry_removed IS NOT NULL ) AS is_tombstone,
+          false AS cluster_pin_lag,
+          ds.details
+        FROM cargo.dag_sources ds
+        JOIN cargo.dags d USING ( cid_v1 )
+      WHERE
+        d.size_actual IS NULL
+          AND
+        ds.details->>'_lagging_pin_redirect_from_user' IS NULL
 
-          UNION ALL
+            UNION ALL
 
-    SELECT
-        s.project,
-        ds.cid_v1,
-        ds.source_key,
-        ( SELECT srcid FROM cargo.sources ss WHERE ss.project = s.project AND ss.source = REPLACE( ds.details->>'upload_type', 'Redirect from user ', '') ) AS srcid,
-        ds.entry_created,
-        false AS is_tombstone,
-        ds.details
-      FROM cargo.dag_sources ds
-      JOIN cargo.dags d USING ( cid_v1 )
-      JOIN cargo.sources s USING ( srcid )
-    WHERE
-      d.size_actual IS NULL
-        AND
-      s.source = 'INTERNAL SYSTEM USER'
-        AND
-      ds.details->>'upload_type' LIKE 'Redirect from user%'
-  ) u
+      SELECT
+          ds.cid_v1,
+          ds.source_key,
+          ( SELECT srcid FROM cargo.sources ss WHERE ss.project = s.project AND ss.source = ds.details->>'_lagging_pin_redirect_from_user') AS srcid,
+          ds.entry_created,
+          ds.entry_removed,
+          ( ds.entry_removed IS NOT NULL ) AS is_tombstone,
+          true AS cluster_pin_lag,
+          ds.details
+        FROM cargo.dag_sources ds
+        JOIN cargo.dags d USING ( cid_v1 )
+        JOIN cargo.sources s USING ( srcid )
+      WHERE
+        d.size_actual IS NULL
+          AND
+        ds.details->>'_lagging_pin_redirect_from_user' IS NOT NULL
 
-  ORDER BY project, srcid, entry_created DESC
+    ) u
+    JOIN cargo.sources s USING ( srcid )
+  ORDER BY s.project, u.srcid, u.entry_created DESC
 );
 
 CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
   WITH
   incomplete_sources AS (
     SELECT
-      srcid,
+      ml.srcid,
       COUNT(*) AS count_missing,
-      MIN( entry_created ) AS oldest_missing,
-      MAX( entry_created ) AS newest_missing
-    FROM cargo.dags_missing_list
-    WHERE NOT is_tombstone
-    GROUP BY srcid
-  ),
-  source_details AS (
-    SELECT
+      MIN( ml.entry_created ) AS oldest_missing,
+      MAX( ml.entry_created ) AS newest_missing
+    FROM cargo.dags_missing_list ml
+    WHERE NOT ml.is_tombstone
+    GROUP BY ml.srcid
+  )
+  SELECT
       s.project,
-      si.srcid,
+      s.srcid,
       COALESCE( s.details ->> 'nickname', s.details ->> 'github' ) AS source_nick,
       s.details ->> 'name' AS source_name,
       s.details ->> 'email' AS source_email,
       s.weight,
       oldest_missing,
       newest_missing,
-      si.count_missing,
-      ( SELECT COUNT(*) AS count_total FROM cargo.dag_sources WHERE srcid = s.srcid )
+      si.count_missing
     FROM incomplete_sources si
     JOIN cargo.sources s USING (srcid)
-  )
-  SELECT *, ( 100 * count_missing::NUMERIC / count_total::NUMERIC )::NUMERIC(5,2) AS pct_missing
-    FROM source_details
-  ORDER BY weight DESC NULLS FIRST, count_missing DESC, srcid
+  ORDER BY s.project, s.weight DESC NULLS FIRST, newest_missing DESC, srcid
 );
 
 CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (

@@ -14,6 +14,7 @@ use SQL::Translator;
   __PACKAGE__->loader_options (
     naming => 'v8',
     db_schema => 'cargo',
+    exclude => qr/^debug/,
   );
 }
 

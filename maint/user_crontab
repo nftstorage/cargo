@@ -1,22 +1,31 @@
 # Edit this file to introduce tasks to be run by user-specific cron.
-# Load (overwriting everything before!!!) as:
 #
+# Load (overwriting everything prior!!!) as:
 #  crontab - < maint/user_crontab
+#
+# Test for pending changes:
+#  diff -U0 <( crontab -l ) maint/user_crontab
 #
 GOLOG_LOG_FMT=json
 
-# Everything fires every 5 mins: if another process is running, the lock is silently observed without loggging anything
+# Everything fires every 5 mins: if another process is running, the lock is silently observed without logging anything
 */5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron get-new-dags                            >>"$LOGDIR/cron_get-new-dags.log.ndjson" 2>&1
 */5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron get-new-nfts                            >>"$LOGDIR/cron_get-new-nfts.log.ndjson" 2>&1
 */5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron export-status                           >>"$LOGDIR/cron_export-status.log.ndjson" 2>&1
 */5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron track-deals                             >>"$LOGDIR/cron_track-deals.log.ndjson" 2>&1
 34 * * * *      LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron aggregate-dags --export-dir ~/CAR_DATA  >>"$LOGDIR/cron_aggregate-dags.log.ndjson" 2>&1
 
-# default 4.5 min expiration (start delayed by 10 seconds, allowing sweeps below to start 1st)
-*/5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; sleep 10 && mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron --ipfs-api-max-workers 512 pin-dags >>"$LOGDIR/cron_pin-dags.log.ndjson" 2>&1
+# analysis with default 4.5 min expiration (start delayed by 10 seconds, allowing he one below to start 1st)
+*/5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; sleep 10 && mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron --ipfs-api-max-workers 1024 analyze-dags >>"$LOGDIR/cron_analyze-dags.log.ndjson" 2>&1
 
-# Run a 25-minute sweep every 2 hours ( allow analysis of *really* deep DAGs )
-55 */2 * * *    LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron --ipfs-api-timeout 1500 --ipfs-api-max-workers 1024 pin-dags >>"$LOGDIR/cron_pin-dags.log.ndjson" 2>&1
+# Run a 25-minute analysis every 2 hours ( allow parsing of *really* large/deep DAGs )
+55 */2 * * *    LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron --ipfs-api-timeout 1500 --ipfs-api-max-workers 2048 analyze-dags >>"$LOGDIR/cron_analyze-dags.log.ndjson" 2>&1
 
-# Every half hour try to pin (for 25 minutes) whatever we may have missed over the past weeks
-14,44 * * * *   LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && timeout 1500 $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/cron_sweep-missed-pins.log" 2>&1
+# helper-sweeps:
+# for a number of reasons and bugs the core go-based pin+analysis framework could get overwhelmed
+# what follows is a set of "only pin, we will do the rest" jobs that help with:
+# - breaking up the outstanding queue and prioritizing it properly
+# - allowing looking back "further in time" to catch stragglers
+*/5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && SWEEP_TIMEOUT_SEC=180  SWEEP_MOST_AGE="2 days"  SWEEP_LEAST_AGE="1 minutes" SWEEP_EXTRA_COND="AND weight >= 0 AND weight != 42"     $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/pin_sweep-immediate.log" 2>&1
+*/5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && SWEEP_TIMEOUT_SEC=45   SWEEP_MOST_AGE="15 days" SWEEP_LEAST_AGE="1 minutes" SWEEP_EXTRA_COND="AND weight = 42 AND NOT is_tombstone" $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/pin_sweep-nez.log" 2>&1
+24,54 * * * *   LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && SWEEP_TIMEOUT_SEC=7200 SWEEP_MOST_AGE="90 days" SWEEP_LEAST_AGE="45 hours"  SWEEP_EXTRA_COND="AND weight != 42"                     $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/pin_sweep-long.log" 2>&1

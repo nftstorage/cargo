@@ -97,13 +97,13 @@ var aggregateDags = &cli.Command{
 		&cli.UintFlag{
 			Name:        "settle-delay-hours",
 			Usage:       "Amount of hours before considering an entry for inclusion",
-			Value:       2,
+			Value:       1,
 			Destination: &settleDelayHours,
 		},
 		&cli.UintFlag{
 			Name:        "force-aggregation-hours",
 			Usage:       "When the pending set includes a CID that many hours old, mix in preexisting aggregates to make a new one",
-			Value:       6,
+			Value:       12,
 			Destination: &forceAgeHours,
 		},
 		&cli.BoolFlag{
@@ -212,7 +212,7 @@ var aggregateDags = &cli.Command{
 		if !captureAggregateCandidatesSnapshot {
 			rows, err = db.Query(ctx, masterListSQL)
 		} else {
-			mvName := `cargo.aggregate_candidates_snapshot__` + time.Now().Format("2006_01_02__15_04_05")
+			mvName := `cargo.debug_aggregate_candidates_snapshot__` + time.Now().Format("2006_01_02__15_04_05")
 			_, err = db.Exec(ctx, fmt.Sprintf("CREATE MATERIALIZED VIEW %s AS\n%s", mvName, masterListSQL))
 			if err != nil {
 				return err

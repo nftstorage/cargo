@@ -1,46 +1,56 @@
 #!/bin/bash
 
-export IPFSAPI="http://127.0.0.1:5001/api/v0"
+set -eu
+set -o pipefail
 
-# Get list of pending cids ( if we have pinned it already - exclude )
+export SWEEP_MOST_AGE="${SWEEP_MOST_AGE:-30 days}"
+export SWEEP_LEAST_AGE="${SWEEP_LEAST_AGE:-15 minutes}"
+export SWEEP_EXTRA_COND="${SWEEP_EXTRA_COND:-}"
+export SWEEP_TIMEOUT_SEC="${SWEEP_TIMEOUT_SEC:-300}"
+export SWEEP_CONCURRENCY="${SWEEP_CONCURRENCY:-1024}"
+
+export SWEEP_IPFSAPI="${SWEEP_IPFSAPI:-$( grep "ipfs-api" "$HOME/dagcargo.toml" | cut -d '=' -f2- | sed 's/[ "]*//g' )}"
+SWEEP_IPFSAPI="${SWEEP_IPFSAPI:-http://localhost:5001}"
+
+###
+### Only execute one version of sweeper with specific options
+###
+[[ -z "${SWEEP_LOCKFILE:-}" ]] \
+&& export SWEEP_LOCKFILE="/dev/shm/pin_sweep_$(
+  md5sum <<<"$SWEEP_IPFSAPI $SWEEP_MOST_AGE $SWEEP_LEAST_AGE $SWEEP_EXTRA_COND $SWEEP_TIMEOUT_SEC $SWEEP_CONCURRENCY" \
+  | cut -d' ' -f1
+).lock" \
+&& exec /usr/bin/flock -en "$SWEEP_LOCKFILE" "$0" "$@"
+###
+###
+###
+
+# Get list of pending cids, excluding anything repoted already pinned by daemon
 cids_pending="$(
-  comm -23 \
+  comm -13 \
+    <( curl -sXPOST "$SWEEP_IPFSAPI/api/v0/pin/ls?type=recursive" | jq -r '.Keys | to_entries | .[] | .key' | sort -u ) \
     <( psql -AtF, service=cargo <<<"
-        SELECT cid_v1 FROM cargo.dags d WHERE
-          size_actual IS NULL
-            AND
-          entry_created BETWEEN (NOW()-'30 days'::INTERVAL) AND (NOW()-'1 hours'::INTERVAL)
-            AND
-          EXISTS ( SELECT 42 FROM cargo.dag_sources ds WHERE d.cid_v1 = ds.cid_v1 AND ds.entry_removed IS NULL )
-         -- -- Always poll everything, even if inactive
-         --   AND
-         -- EXISTS (
-         --   SELECT 42
-         --     FROM cargo.dag_sources ds JOIN cargo.sources s USING ( srcid )
-         --   WHERE
-         --     d.cid_v1 = ds.cid_v1
-         --       AND
-         --     ( s.weight IS NULL OR s.weight >= 0 )
-         -- )
-      " | sort
+        SELECT cid_v1
+          FROM cargo.dags_missing_list
+        WHERE
+          entry_created BETWEEN
+            (NOW()-'$SWEEP_MOST_AGE'::INTERVAL)
+              AND
+            (NOW()-'$SWEEP_LEAST_AGE'::INTERVAL)
+          $SWEEP_EXTRA_COND
+      " | sort -u
     ) \
-    <( curl -sXPOST "$IPFSAPI/pin/ls?type=recursive" | jq -r '.Keys | to_entries | .[] | .key' | sort ) \
   | sort -R
 )"
 
-#### DIsabled until go-ipfs connection issues are fixed
-# # Force-connect to first random 8k of anything claiming to have our stuff
-# echo "$cids_pending" \
-# | head -n 8192 \
-# | xargs -P 1024 -n1 -I{} bash -c \
-#   'curl -m7 -sXPOST "$IPFSAPI/dht/findprovs?numproviders=7&verbose=false&arg={}" | jq -r "select(.Type == 4) | .Responses | .[] | .ID"' \
-# | sort -u \
-# | sed 's/^/\/p2p\//' \
-# | xargs -P 256 -n1 -I{} curl -m35 -sXPOST "$IPFSAPI/swarm/connect?arg={}" >/dev/null
 
-echo "$(date -u): Attempting sweep of $( wc -w <<<"$cids_pending" ) DAGs"
+echo "$(date -u): Attempting sweep of $( wc -w <<<"$cids_pending" ) DAGs [[ SWEEP_MOST_AGE:'$SWEEP_MOST_AGE' SWEEP_LEAST_AGE:'$SWEEP_LEAST_AGE' SWEEP_TIMEOUT_SEC:'$SWEEP_TIMEOUT_SEC' SWEEP_CONCURRENCY:'$SWEEP_CONCURRENCY' SWEEP_EXTRA_COND:'$SWEEP_EXTRA_COND' ]]"
 
-# Now try to gather anything that could have been missed, without a timeout ( timeout comes from caller )
-echo "$cids_pending" \
-| xargs -P 1024 -n1 -I{} bash -c \
-  'curl -sXPOST "$IPFSAPI/pin/add?arg={}" | jq -r "try .Pins[]"'
+exec 3>&1
+pin_count="$(
+ <<<"$cids_pending" xargs -P $SWEEP_CONCURRENCY -n1 -I{} bash -c "curl -m$SWEEP_TIMEOUT_SEC -sXPOST '$SWEEP_IPFSAPI/api/v0/pin/add?arg={}' | jq -r 'try .Pins[]'" \
+ | tee >( perl -pe '$|=1; s/.*/./s' >&3 ) \
+ | wc -w
+)"
+
+echo -e "\n$(date -u): Attempt finished, resulted in $pin_count new pins"

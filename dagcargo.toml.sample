@@ -1,8 +1,10 @@
-
+pg-connstring = "postgres:///postgres?user=cargo&password=&host=/var/run/postgresql"
+lotus-api = "http://172.31.45.110:1234"
+ipfs-api = "http://localhost:5001"
 cf-account = "..."
+cf-bearer-token = "..."
 cf-kvnamespace-nfts = "..."
 cf-kvnamespace-deals = "..."
 cf-kvnamespace-users = "..."
-cf-bearer-token = "..."
 fauna-token-w3s-prod = "..."
 fauna-token-w3s-stage = "..."

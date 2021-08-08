@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -19,27 +18,27 @@ import (
 )
 
 type stats struct {
-	pinned *uint64
-	failed *uint64
-	refs   *uint64
-	size   *uint64
+	analyzed *uint64
+	failed   *uint64
+	refs     *uint64
+	size     *uint64
 }
 
-var pinDags = &cli.Command{
-	Usage: "Pin and analyze DAGs locally",
-	Name:  "pin-dags",
+var analyzeDags = &cli.Command{
+	Usage: "Analyze DAGs after pinning them locally",
+	Name:  "analyze-dags",
 	Flags: []cli.Flag{
 		&cli.UintFlag{
 			Name:  "skip-dags-aged",
-			Usage: "If a dag is older than that many days - ignore it",
+			Usage: "If a dag is older than that many days - skip over it",
 			Value: 5,
 		},
 	},
 	Action: func(cctx *cli.Context) error {
 
-		var closer func()
-		cctx.Context, closer = context.WithCancel(cctx.Context)
-		defer closer()
+		var ctxCloser func()
+		cctx.Context, ctxCloser = context.WithCancel(cctx.Context)
+		defer ctxCloser()
 
 		var res struct{ Keys map[string]ipfsapi.PinInfo }
 		if err := ipfsAPI(cctx).Request("pin/ls").Option("type", "recursive").Option("quiet", "true").Exec(cctx.Context, &res); err != nil {
@@ -54,13 +53,12 @@ var pinDags = &cli.Command{
 			systemPins[cidv1(c)] = struct{}{}
 		}
 
-		pinsSeen := cid.NewSet()
-		pinsTodo := make([]cid.Cid, 0, 256<<10)
 		rows, err := db.Query(
 			cctx.Context,
 			`
 			SELECT
 					cid_v1,
+					( entry_last_updated < ( NOW() - $1::INTERVAL ) ) AS dag_too_old,
 					EXISTS (
 						SELECT 42
 							FROM cargo.dag_sources ds
@@ -71,18 +69,15 @@ var pinDags = &cli.Command{
 							ds.entry_removed IS NULL
 								AND
 							( s.weight IS NULL OR s.weight >= 0 )
-					)
+					) AS src_is_active
 				FROM cargo.dags d
-			WHERE
-				size_actual IS NULL
-					AND
-				entry_last_updated > ( NOW() - $1::INTERVAL )
+			WHERE size_actual IS NULL
 			ORDER BY
 				(
-					SELECT MAX(s.weight)
+					SELECT MAX( COALESCE( s.weight, 100 ))
 						FROM cargo.dag_sources ds JOIN cargo.sources s USING ( srcid )
 					WHERE d.cid_v1 = ds.cid_v1
-				) NULLS FIRST,
+				) DESC,
 				entry_created DESC -- ensure newest arrivals are attempted first
 			`,
 			fmt.Sprintf("%d days", cctx.Uint("skip-dags-aged")),
@@ -91,109 +86,96 @@ var pinDags = &cli.Command{
 			return err
 		}
 
-		var alreadyKnown int64
+		pinsSeen := cid.NewSet()
+		dagsToProcess := make([]cid.Cid, 0, 128<<10)
+		dagsToDownloadAndProcess := make([]cid.Cid, 0, 64<<10)
+
+		var alreadyKnownCount int64
 		var cidStr string
-		var srcActive bool
+		var dagTooOld, srcIsActive bool
 		for rows.Next() {
-			if err = rows.Scan(&cidStr, &srcActive); err != nil {
+			if err = rows.Scan(&cidStr, &dagTooOld, &srcIsActive); err != nil {
 				return err
 			}
 			c, err := cid.Parse(cidStr)
 			if err != nil {
 				return err
 			}
-
-			if _, found := systemPins[c]; found || srcActive {
-				if pinsSeen.Visit(c) {
-					pinsTodo = append(pinsTodo, c)
-					if found {
-						alreadyKnown++
-					}
-				}
+			if !pinsSeen.Visit(c) {
+				// duplicate
+				continue
 			}
+
+			if _, alreadyPinned := systemPins[c]; alreadyPinned {
+				// we already have it ( a sweeper picked it up )
+				// goes straight to the process queue, regardless of status/age
+				alreadyKnownCount++
+				dagsToProcess = append(dagsToProcess, c)
+			} else if dagTooOld {
+				// sorry, old yeller
+				continue
+			} else if srcIsActive {
+				// we are instructed to try to download it right away
+				// goes to the queue right after the "already present"
+				dagsToDownloadAndProcess = append(dagsToDownloadAndProcess, c)
+			}
+			// everything else can wait until the sweeper picks it up OR the source (re)activates
 		}
 		if err := rows.Err(); err != nil {
 			return err
 		}
 
 		total := stats{
-			pinned: new(uint64),
-			failed: new(uint64),
-			refs:   new(uint64),
-			size:   new(uint64),
+			analyzed: new(uint64),
+			failed:   new(uint64),
+			refs:     new(uint64),
+			size:     new(uint64),
 		}
 
 		defer func() {
 			log.Infow("summary",
 				"totalSystemPins", len(systemPins),
-				"preexisting", alreadyKnown,
-				"pinned", atomic.LoadUint64(total.pinned),
+				"prepinnedBySweeper", alreadyKnownCount,
+				"analyzed", atomic.LoadUint64(total.analyzed),
 				"failed", atomic.LoadUint64(total.failed),
 				"referencedBlocks", atomic.LoadUint64(total.refs),
 				"bytes", atomic.LoadUint64(total.size),
 			)
 		}()
 
-		maxWorkers := len(pinsTodo)
-		if maxWorkers == 0 {
+		todoCount := uint64(len(dagsToDownloadAndProcess) + len(dagsToProcess))
+		toAnalyzeCh := make(chan cid.Cid, todoCount)
+		// process in order - first what we already have, then everything else
+		for _, c := range dagsToProcess {
+			toAnalyzeCh <- c
+		}
+		for _, c := range dagsToDownloadAndProcess {
+			toAnalyzeCh <- c
+		}
+		close(toAnalyzeCh)
+
+		log.Infof("about to analyze/pin %d dags", len(toAnalyzeCh))
+
+		workerCount := len(toAnalyzeCh)
+		if workerCount == 0 {
 			return nil
-		} else if maxWorkers > cctx.Int("ipfs-api-max-workers") {
-			maxWorkers = cctx.Int("ipfs-api-max-workers")
+		} else if workerCount > cctx.Int("ipfs-api-max-workers") {
+			workerCount = cctx.Int("ipfs-api-max-workers")
 		}
 
-		toPinCh := make(chan cid.Cid, 2*maxWorkers)
-		errCh := make(chan error, 1+maxWorkers)
-
-		log.Infof("about to analyze/pin %d dags", len(pinsTodo))
-
-		go func() {
-			defer close(toPinCh) // signal to workers to quit
-
-			var progressTick <-chan time.Time
-			if showProgress {
-				fmt.Fprint(os.Stderr, "0%\r")
-				t := time.NewTicker(250 * time.Millisecond)
-				progressTick = t.C
-				defer t.Stop()
-			}
-
-			lastPct := uint64(101)
-			for _, c := range pinsTodo {
-				select {
-				case toPinCh <- c:
-					// feeder
-				case <-cctx.Context.Done():
-					errCh <- cctx.Context.Err()
-					return
-				case <-progressTick:
-					curPct := 100 * (atomic.LoadUint64(total.failed) + atomic.LoadUint64(total.pinned)) / uint64(len(pinsTodo))
-					if curPct != lastPct {
-						lastPct = curPct
-						fmt.Fprintf(os.Stderr, "%d%%\r", lastPct)
-					}
-				case e := <-errCh:
-					if e != nil {
-						errCh <- e
-					}
-					return
-				}
-			}
-		}()
-
-		var wg sync.WaitGroup
-		for maxWorkers > 0 {
-			maxWorkers--
-			wg.Add(1)
+		doneCh := make(chan struct{}, workerCount) // this effectively emulates a sync.WaitGroup
+		errCh := make(chan error, workerCount)
+		for i := 0; i < workerCount; i++ {
 			go func() {
-				defer wg.Done()
+				defer func() { doneCh <- struct{}{} }()
 
 				for {
-					c, chanOpen := <-toPinCh
+					c, chanOpen := <-toAnalyzeCh
 					if !chanOpen {
 						return
 					}
-
-					if err := pinAndAnalyze(cctx, c, total); err != nil {
+					err := pinAndAnalyze(cctx, c, total)
+					if err != nil {
 						errCh <- err
 						return
 					}
@@ -201,13 +183,58 @@ var pinDags = &cli.Command{
 			}()
 		}
 
-		wg.Wait()
+		var progressTick <-chan time.Time
+		lastPct := uint64(101)
+		if showProgress {
+			fmt.Fprint(os.Stderr, "0%\r")
+			t := time.NewTicker(250 * time.Millisecond)
+			progressTick = t.C
+			defer t.Stop()
+		}
+		var workerError error
+	watchdog:
+		for {
+			select {
+
+			case <-progressTick:
+				curPct := 100 * (atomic.LoadUint64(total.failed) + atomic.LoadUint64(total.analyzed)) / todoCount
+				if curPct != lastPct {
+					lastPct = curPct
+					fmt.Fprintf(os.Stderr, "%d%%\r", lastPct)
+				}
+
+			case <-doneCh:
+				workerCount--
+				if workerCount == 0 {
+					break watchdog
+				}
+
+			case <-cctx.Context.Done():
+				break watchdog
+
+			case workerError = <-errCh:
+				ctxCloser()
+				break watchdog
+			}
+		}
+
+		// wg.Wait()
+		for workerCount > 0 {
+			<-doneCh
+			workerCount--
+		}
+		close(errCh) // no writers remain
 		if showProgress {
 			defer fmt.Fprint(os.Stderr, "100%\n")
 		}
 
-		close(errCh)
-		return <-errCh
+		if workerError != nil {
+			return workerError
+		}
+		if err := <-errCh; err != nil {
+			return err
+		}
+		return cctx.Context.Err()
 	},
 }
 
@@ -228,22 +255,24 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) 
 	var tx pgx.Tx
 
 	defer func() {
+
+		if err != nil {
+			atomic.AddUint64(total.failed, 1)
+			// Timeouts during analysis are non-fatal, but still logged as an error
+			if ue, castOk := err.(*url.Error); castOk && ue.Timeout() {
+				log.Errorf("aborting '%s' of '%s' due to timeout: %s", ue.Op, ue.URL, ue.Unwrap().Error())
+				err = nil
+			}
+		}
+
+		// pull in a possible cancel if any
 		if err == nil {
 			err = cctx.Context.Err()
 		}
 
 		if err != nil {
-
-			atomic.AddUint64(total.failed, 1)
-
 			if tx != nil {
 				tx.Rollback(context.Background()) // nolint:errcheck
-			}
-
-			// Timeouts are non-fatal, but still logged as an error
-			if ue, castOk := err.(*url.Error); castOk && ue.Timeout() {
-				log.Errorf("aborting '%s' of '%s' due to timeout: %s", ue.Op, ue.URL, ue.Unwrap().Error())
-				err = nil
 			}
 		} else if tx != nil {
 			err = tx.Commit(cctx.Context)
@@ -338,7 +367,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) 
 		return err
 	}
 
-	atomic.AddUint64(total.pinned, 1)
+	atomic.AddUint64(total.analyzed, 1)
 	atomic.AddUint64(total.size, ds.Size)
 	return nil
 }

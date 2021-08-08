@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"time"
 
 	"github.com/hasura/go-graphql-client"
@@ -17,10 +18,11 @@ var faunaProjects = map[int]string{
 
 // these two are the structs placed in the corresponding `details` JSONB
 type dagSourceEntryMeta struct {
-	Label       string       `json:"label,omitempty"`
-	UploadType  string       `json:"upload_type,omitempty"`
-	TokenUsed   *sourceToken `json:"token_used,omitempty"`
-	ClaimedSize int64        `json:"claimed_size,omitempty,string"`
+	Label         string       `json:"label,omitempty"`
+	UploadType    string       `json:"upload_type,omitempty"`
+	TokenUsed     *sourceToken `json:"token_used,omitempty"`
+	ClaimedSize   int64        `json:"claimed_size,omitempty,string"`
+	PinLagForUser string       `json:"_lagging_pin_redirect_from_user,omitempty"`
 }
 type dagSourceMeta struct {
 	Github        string `json:"github,omitempty"`
@@ -114,13 +116,44 @@ var getNewDags = &cli.Command{
 			return err
 		}
 
+		projects := make([]int, 0, len(faunaProjects))
 		for pID := range faunaProjects {
+			projects = append(projects, pID)
+		}
+		sort.Ints(projects)
+		for _, pID := range projects {
 			if err := getProjectDags(cctx, pID, availableCids, ownAggregates); err != nil {
 				return err
 			}
 		}
 
-		return nil
+		// we got that far: all good
+		// cleanup everything with a proper source that is also still attached to the sysuser
+		_, err = db.Exec(
+			cctx.Context,
+			`
+			DELETE FROM cargo.dag_sources WHERE ( srcid, source_key ) IN (
+				SELECT ds.srcid, ds.source_key
+					FROM cargo.dag_sources ds
+					JOIN cargo.sources s
+						ON
+							ds.srcid = s.srcid
+								AND
+							s.source = $1
+					JOIN cargo.dag_sources subds
+						ON ds.cid_v1 = subds.cid_v1
+					JOIN cargo.sources subs
+						ON
+							subds.srcid = subs.srcid
+								AND
+							subs.project = s.project
+								AND
+							subs.source = ds.details->>'_lagging_pin_redirect_from_user'
+			)
+			`,
+			sysUser.UserID,
+		)
+		return err
 	},
 }
 
@@ -177,7 +210,7 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 			}
 
 			totalQueryDags++
-			var isPendging bool
+			var pendingPinForUser string
 
 			// we might already have the CID - amount of pins not relevant
 			if _, avail := availableDags[cidv1(c)]; !avail {
@@ -193,14 +226,13 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 					// we are unlikely to find the data for this
 					// but we also want to register it *in case* things show up later
 					// to do that we swapout the user and proceed
-					isPendging = true
+					pendingPinForUser = d.User.UserID
 
 					// create the user so we do not lose track of them
 					if _, _, err := createUser(cctx.Context, projectNum, d); err != nil {
 						return err
 					}
 
-					d.Type = "Redirect from user " + d.User.UserID
 					d.AuthToken = sourceToken{}
 					d.User = sysUser
 				}
@@ -218,9 +250,10 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 			}
 
 			em := dagSourceEntryMeta{
-				Label:       d.Name,
-				UploadType:  d.Type,
-				ClaimedSize: d.Content.DagSize,
+				Label:         d.Name,
+				UploadType:    d.Type,
+				ClaimedSize:   d.Content.DagSize,
+				PinLagForUser: pendingPinForUser,
 			}
 			if d.AuthToken.ID != "" {
 				em.TokenUsed = &d.AuthToken
@@ -269,7 +302,7 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 			if d.Deleted != nil && time.Since(entryLastUpdate) < 5*time.Second {
 				removedDags++
 			} else if isNew {
-				if isPendging {
+				if pendingPinForUser != "" {
 					newPending++
 				} else {
 					newDags++

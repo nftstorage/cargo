@@ -122,7 +122,7 @@ func main() {
 		Commands: []*cli.Command{
 			getNewNftCids,
 			getNewDags,
-			pinDags,
+			analyzeDags,
 			aggregateDags,
 			trackDeals,
 			exportStatus,
