@@ -206,6 +206,9 @@ var beforeCliSetup = func(cctx *cli.Context) error {
 			return err
 		}
 
+		currentCmd = firstCmdOccurence
+		log.Infow(fmt.Sprintf("=== BEGIN '%s' run", currentCmd))
+
 		// init the shared DB connection: do it here, since now we know the config *AND*
 		// we want the maxConn counter shared, singleton-style
 		dbConnCfg, err := pgxpool.ParseConfig(cctx.String("pg-connstring"))
@@ -216,9 +219,6 @@ var beforeCliSetup = func(cctx *cli.Context) error {
 		if err != nil {
 			return err
 		}
-
-		currentCmd = firstCmdOccurence
-		log.Infow(fmt.Sprintf("=== BEGIN '%s' run", currentCmd))
 	}
 
 	return nil
