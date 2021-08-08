@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	filaddr "github.com/filecoin-project/go-address"
 	filabi "github.com/filecoin-project/go-state-types/abi"
 	filprovider "github.com/filecoin-project/lotus/chain/actors/builtin/miner"
@@ -20,6 +21,7 @@ type filClient struct {
 type filDeal struct {
 	pieceCid     cid.Cid
 	aggregateCid cid.Cid
+	status       string
 }
 
 var trackDeals = &cli.Command{
@@ -37,10 +39,9 @@ var trackDeals = &cli.Command{
 		rows, err := db.Query(
 			ctx,
 			`
-			SELECT a.aggregate_cid, a.piece_cid, d.deal_id
+			SELECT a.aggregate_cid, a.piece_cid, d.deal_id, d.status
 				FROM cargo.aggregates a
-				LEFT JOIN cargo.deals d
-					ON a.aggregate_cid = d.aggregate_cid AND d.status != 'terminated'
+				LEFT JOIN cargo.deals d USING ( aggregate_cid )
 			`,
 		)
 		if err != nil {
@@ -50,8 +51,9 @@ var trackDeals = &cli.Command{
 			var aCidStr string
 			var pCidStr string
 			var dealID *int64
+			var dealStatus *string
 
-			if err = rows.Scan(&aCidStr, &pCidStr, &dealID); err != nil {
+			if err = rows.Scan(&aCidStr, &pCidStr, &dealID, &dealStatus); err != nil {
 				return err
 			}
 			aCid, err := cid.Parse(aCidStr)
@@ -67,25 +69,30 @@ var trackDeals = &cli.Command{
 				knownDeals[*dealID] = filDeal{
 					pieceCid:     pCid,
 					aggregateCid: aCid,
+					status:       *dealStatus,
 				}
 			}
-
 			aggCidLookup[pCid] = aCid
 		}
 		if err := rows.Err(); err != nil {
 			return err
 		}
 
-		var currentDealCount, newDealCount int
+		var stateDealCount, newDealCount, terminatedDealCount int
 		defer func() {
-			log.Infow("summary", "knownPieces", len(aggCidLookup), "currentKnownDeals", currentDealCount, "newDeals", newDealCount, "terminatedDeals", len(knownDeals))
+			log.Infow("summary",
+				"knownPieces", len(aggCidLookup),
+				"relatedDealsInState", stateDealCount,
+				"newDeals", newDealCount,
+				"terminatedDeals", terminatedDealCount,
+			)
 		}()
 
 		if len(aggCidLookup) == 0 {
 			return nil
 		}
 
-		log.Infof("checking the status of %d active deals and %d known Piece CIDs", len(knownDeals), len(aggCidLookup))
+		log.Infof("checking the status of %s known Piece CIDs", humanize.Comma(int64(len(aggCidLookup))))
 
 		api, apiClose, err := lotusAPI(cctx)
 		if err != nil {
@@ -103,7 +110,7 @@ var trackDeals = &cli.Command{
 		if err != nil {
 			return err
 		}
-		log.Infof("retrieved %d active deal records", len(deals))
+		log.Infof("retrieved %s state deal records", humanize.Comma(int64(len(deals))))
 
 		for dealIDString, d := range deals {
 			aggCid, known := aggCidLookup[d.Proposal.PieceCID]
@@ -116,11 +123,12 @@ var trackDeals = &cli.Command{
 				return err
 			}
 
-			currentDealCount++
+			stateDealCount++
+			var initialEncounter bool
 			if _, known := knownDeals[dealID]; !known {
-				newDealCount++
+				initialEncounter = true
 			} else {
-				// whatevr remains is not in SMA list, thus "terminated"
+				// at the end whatever remains is not in SMA list, thus will be marked "terminated"
 				delete(knownDeals, dealID)
 			}
 
@@ -178,6 +186,14 @@ var trackDeals = &cli.Command{
 				status = "terminated"
 			}
 
+			if initialEncounter {
+				if status == "terminated" {
+					terminatedDealCount++
+				} else {
+					newDealCount++
+				}
+			}
+
 			_, err = db.Exec(
 				ctx,
 				`
@@ -202,7 +218,11 @@ var trackDeals = &cli.Command{
 		// we have some terminations ( no longer in the market state )
 		if len(knownDeals) > 0 {
 			toFail := make([]int64, 0, len(knownDeals))
-			for dID := range knownDeals {
+			for dID, d := range knownDeals {
+				if d.status == "terminated" {
+					continue
+				}
+				terminatedDealCount++
 				toFail = append(toFail, dID)
 			}
 
