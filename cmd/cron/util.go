@@ -25,6 +25,16 @@ import (
 	"golang.org/x/xerrors"
 )
 
+var faunaProjects = []faunaProject{
+	{id: 0, label: "w3s-stage"},
+	{id: 1, label: "w3s-prod"},
+}
+
+type faunaProject struct {
+	id    int
+	label string
+}
+
 var (
 	db *pgxpool.Pool // singleton populated in urfaveCLIs Before()
 
@@ -142,10 +152,10 @@ func lotusLookbackTipset(cctx *cli.Context, api *lotusapi.FullNodeStruct) (*filt
 	return tipsetAtLookback, nil
 }
 
-func faunaClient(cctx *cli.Context, projectName string) (*graphql.Client, error) {
+func faunaClient(cctx *cli.Context, projectLabel string) (*graphql.Client, error) {
 	cctx.String("")
 
-	optName := "fauna-token-" + projectName
+	optName := "fauna-token-" + projectLabel
 	bearer := cctx.String(optName)
 	if bearer == "" {
 		return nil, xerrors.Errorf("config '%s' is not set", optName)

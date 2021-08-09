@@ -3,18 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"sort"
 	"time"
 
 	"github.com/hasura/go-graphql-client"
 	"github.com/ipfs/go-cid"
 	"github.com/urfave/cli/v2"
 )
-
-var faunaProjects = map[int]string{
-	0: "w3s-stage",
-	1: "w3s-prod",
-}
 
 // these two are the structs placed in the corresponding `details` JSONB
 type dagSourceEntryMeta struct {
@@ -116,13 +110,8 @@ var getNewDags = &cli.Command{
 			return err
 		}
 
-		projects := make([]int, 0, len(faunaProjects))
-		for pID := range faunaProjects {
-			projects = append(projects, pID)
-		}
-		sort.Ints(projects)
-		for _, pID := range projects {
-			if err := getProjectDags(cctx, pID, availableCids, ownAggregates); err != nil {
+		for _, p := range faunaProjects {
+			if err := getProjectDags(cctx, p, availableCids, ownAggregates); err != nil {
 				return err
 			}
 		}
@@ -157,14 +146,14 @@ var getNewDags = &cli.Command{
 	},
 }
 
-func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggregates map[cid.Cid]struct{}) error {
+func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownAggregates map[cid.Cid]struct{}) error {
 
 	cutoff := time.Now().Add(time.Hour * -24 * time.Duration(cctx.Uint("skip-uploads-aged")))
 
 	var newSources, totalQueryDags, newDags, newPending, removedDags int
 	defer func() {
 		log.Infow("summary",
-			"project", faunaProjects[projectNum],
+			"project", project.label,
 			"queryPeriodSince", cutoff,
 			"totalQueryPeriodDags", totalQueryDags,
 			"newSources", newSources,
@@ -180,7 +169,7 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 	// faunaPageSize = 99_999
 	faunaPageSize := 9_999
 
-	gql, err := faunaClient(cctx, faunaProjects[projectNum])
+	gql, err := faunaClient(cctx, project.label)
 	if err != nil {
 		return err
 	}
@@ -229,7 +218,7 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 					pendingPinForUser = d.User.UserID
 
 					// create the user so we do not lose track of them
-					if _, _, err := createUser(cctx.Context, projectNum, d); err != nil {
+					if _, _, err := createUser(cctx.Context, project.id, d); err != nil {
 						return err
 					}
 
@@ -239,7 +228,7 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 			}
 
 			if _, known := seenSources[d.User.UserID]; !known {
-				srcid, isNew, err := createUser(cctx.Context, projectNum, d)
+				srcid, isNew, err := createUser(cctx.Context, project.id, d)
 				if err != nil {
 					return err
 				}
@@ -319,7 +308,7 @@ func getProjectDags(cctx *cli.Context, projectNum int, availableDags, ownAggrega
 	return nil
 }
 
-func createUser(ctx context.Context, proj int, d dagsQueryResult) (srcid int64, isNew bool, _ error) {
+func createUser(ctx context.Context, projID int, d dagsQueryResult) (srcid int64, isNew bool, _ error) {
 
 	sourceMeta, err := json.Marshal(dagSourceMeta{
 		Github:        d.User.Github,
@@ -343,7 +332,7 @@ func createUser(ctx context.Context, proj int, d dagsQueryResult) (srcid int64, 
 				details = EXCLUDED.details
 		RETURNING srcid, (xmax = 0)
 		`,
-		proj,
+		projID,
 		d.User.UserID,
 		d.User.Created,
 		sourceMeta,
