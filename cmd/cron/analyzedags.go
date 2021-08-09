@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/signal"
 	"sync/atomic"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	ipfsapi "github.com/ipfs/go-ipfs-api"
 	"github.com/jackc/pgx/v4"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/sys/unix"
 	"golang.org/x/xerrors"
 )
 
@@ -163,18 +165,25 @@ var analyzeDags = &cli.Command{
 			workerCount = cctx.Int("ipfs-api-max-workers")
 		}
 
+		workerStates := make([]*atomic.Value, workerCount)
 		doneCh := make(chan struct{}, workerCount) // this effectively emulates a sync.WaitGroup
 		errCh := make(chan error, workerCount)
 		for i := 0; i < workerCount; i++ {
+			state := new(atomic.Value)
+			workerStates[i] = state
+
 			go func() {
-				defer func() { doneCh <- struct{}{} }()
+				defer func() {
+					state.Store("exitted")
+					doneCh <- struct{}{}
+				}()
 
 				for {
 					c, chanOpen := <-toAnalyzeCh
 					if !chanOpen {
 						return
 					}
-					err := pinAndAnalyze(cctx, c, total)
+					err := pinAndAnalyze(cctx, c, total, state)
 					if err != nil {
 						errCh <- err
 						return
@@ -182,6 +191,9 @@ var analyzeDags = &cli.Command{
 				}
 			}()
 		}
+
+		dumpWorkerState := make(chan os.Signal, 1)
+		signal.Notify(dumpWorkerState, unix.SIGUSR1)
 
 		var progressTick <-chan time.Time
 		lastPct := uint64(101)
@@ -201,6 +213,11 @@ var analyzeDags = &cli.Command{
 				if curPct != lastPct {
 					lastPct = curPct
 					fmt.Fprintf(os.Stderr, "%d%%\r", lastPct)
+				}
+
+			case <-dumpWorkerState:
+				for i := 0; i < workerCount; i++ {
+					log.Infof("Worker #%d: %s", i, workerStates[i].Load().(string))
 				}
 
 			case <-doneCh:
@@ -247,7 +264,7 @@ type refEntry struct {
 	Err string
 }
 
-func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) {
+func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState *atomic.Value) (err error) {
 
 	api := ipfsAPI(cctx)
 
@@ -277,8 +294,11 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) 
 		} else if tx != nil {
 			err = tx.Commit(cctx.Context)
 		}
+
+		currentState.Store("idle")
 	}()
 
+	currentState.Store("API /pin/add " + rootCid.String())
 	if err = api.Request("pin/add").Arguments(rootCid.String()).Exec(cctx.Context, nil); err != nil {
 		// If we fail to even pin: move on without an error ( we didn't write anything to the DB yet )
 		atomic.AddUint64(total.failed, 1)
@@ -295,6 +315,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) 
 	// Allow for obscenely long stat/refs times
 	api.SetTimeout(time.Second * time.Duration(cctx.Uint("ipfs-api-timeout")) * 15)
 
+	currentState.Store("API /dag/stat " + rootCid.String())
 	ds := new(dagStat)
 	err = api.Request("dag/stat").Arguments(rootCid.String()).Option("progress", "false").Exec(cctx.Context, ds)
 	if err != nil {
@@ -303,14 +324,14 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) 
 
 	if ds.NumBlocks > 1 {
 
-		refs := make([][]interface{}, 0, 256)
-
+		currentState.Store("API /refs " + rootCid.String())
 		resp, err := api.Request("refs").Arguments(rootCid.String()).Option("unique", "true").Option("recursive", "true").Send(cctx.Context)
 		if err != nil {
 			return err
 		}
 
 		dec := json.NewDecoder(resp.Output)
+		refs := make([][]interface{}, 0, 256)
 		for {
 			ref := new(refEntry)
 			if decErr := dec.Decode(&ref); decErr != nil {
@@ -337,6 +358,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) 
 			})
 		}
 
+		currentState.Store("DbWrite refs " + rootCid.String())
 		tx, err = db.Begin(cctx.Context)
 		if err != nil {
 			return err
@@ -358,6 +380,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats) (err error) 
 	updSQL := `UPDATE cargo.dags SET size_actual = $1 WHERE cid_v1 = $2`
 	updArgs := []interface{}{ds.Size, cidv1(rootCid).String()}
 
+	currentState.Store("DbWrite size_actual " + rootCid.String())
 	if tx != nil {
 		_, err = tx.Exec(cctx.Context, updSQL, updArgs...)
 	} else {
