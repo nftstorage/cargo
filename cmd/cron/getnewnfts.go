@@ -15,9 +15,6 @@ import (
 	"golang.org/x/xerrors"
 )
 
-// nft.storage
-const projectNftStorage = 2
-
 var nftKeyparse = regexp.MustCompile(`^\s*(.+):([^:\s]+)\s*$`)
 
 var getNewNftCids = &cli.Command{
@@ -50,6 +47,7 @@ var getNewNftCids = &cli.Command{
 		go listAllNftKeys(ctx, api, nftKvID, resCh, errCh)
 
 		knownSources := make(map[string]int64, bufPresize)
+		projectNftStorage := 2
 		rows, err := db.Query(
 			ctx,
 			`SELECT srcid, source FROM cargo.sources WHERE project = $1 AND details IS NOT NULL`,

@@ -12,6 +12,7 @@ import (
 
 // these two are the structs placed in the corresponding `details` JSONB
 type dagSourceEntryMeta struct {
+	OriginalCid   string       `json:"original_cid"`
 	Label         string       `json:"label,omitempty"`
 	UploadType    string       `json:"upload_type,omitempty"`
 	TokenUsed     *sourceToken `json:"token_used,omitempty"`
@@ -40,13 +41,13 @@ type user struct {
 }
 
 // query/result for grabbing updates
-type dagsQuery struct {
+type faunaQueryDags struct {
 	FindUploadsCreatedAfter struct {
 		CursorNext *string `graphql:"after"`
-		Data       []dagsQueryResult
+		Data       []faunaQueryDagsResult
 	} `graphql:"findUploadsCreatedAfter (since: $since _cursor: $cursor_position _size: $page_size)"`
 }
-type dagsQueryResult struct {
+type faunaQueryDagsResult struct {
 	ID      string `graphql:"_id"`
 	Created time.Time
 	Deleted *time.Time
@@ -175,7 +176,7 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 	}
 	var cursorNext *graphql.String
 	for {
-		var resultPage dagsQuery
+		var resultPage faunaQueryDags
 		if err := gql.Query(cctx.Context, &resultPage, map[string]interface{}{
 			"page_size":       graphql.Int(faunaPageSize),
 			"cursor_position": cursorNext,
@@ -192,9 +193,10 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 			if err != nil {
 				return err
 			}
+			c = cidv1(c)
 
 			// why would anyone be so mean?
-			if _, own := ownAggregates[cidv1(c)]; own {
+			if _, own := ownAggregates[c]; own {
 				continue
 			}
 
@@ -202,7 +204,7 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 			var pendingPinForUser string
 
 			// we might already have the CID - amount of pins not relevant
-			if _, avail := availableDags[cidv1(c)]; !avail {
+			if _, avail := availableDags[c]; !avail {
 
 				// Only consider things with at least one `Pinned` state
 				// everything else may or may not be bogus
@@ -239,6 +241,7 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 			}
 
 			em := dagSourceEntryMeta{
+				OriginalCid:   d.Content.CidString,
 				Label:         d.Name,
 				UploadType:    d.Type,
 				ClaimedSize:   d.Content.DagSize,
@@ -258,7 +261,7 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 				INSERT INTO cargo.dags ( cid_v1, entry_created ) VALUES ( $1, $2 )
 					ON CONFLICT DO NOTHING
 				`,
-				cidv1(c).String(),
+				c.String(),
 				d.Content.Created,
 			)
 			if err != nil {
@@ -277,7 +280,7 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 						entry_removed = $6
 				RETURNING (xmax = 0), entry_last_updated
 				`,
-				cidv1(c).String(),
+				c.String(),
 				d.ID,
 				seenSources[d.User.UserID],
 				entryMeta,
@@ -308,7 +311,7 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 	return nil
 }
 
-func createUser(ctx context.Context, projID int, d dagsQueryResult) (srcid int64, isNew bool, _ error) {
+func createUser(ctx context.Context, projID int, d faunaQueryDagsResult) (srcid int64, isNew bool, _ error) {
 
 	sourceMeta, err := json.Marshal(dagSourceMeta{
 		Github:        d.User.Github,
