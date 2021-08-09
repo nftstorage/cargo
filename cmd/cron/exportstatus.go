@@ -117,8 +117,8 @@ var exportStatus = &cli.Command{
 					de.provider,
 					de.deal_id,
 					ae.datamodel_selector,
-					de.epoch_start,
-					de.epoch_end
+					de.start_time,
+					de.end_time
 				FROM cargo.dag_sources ds
 				JOIN cargo.sources s USING ( srcid )
 				JOIN cargo.dags d USING ( cid_v1 )
@@ -147,7 +147,7 @@ var exportStatus = &cli.Command{
 
 			curCidReceiver := new(statusUpdate)
 			curDeal := new(statusDealEntry)
-			var eStart, eEnd *int64
+			var dStart, dEnd *time.Time
 			if err = rows.Scan(
 				&curCidReceiver.key,
 				&curCidReceiver.cidv1,
@@ -162,8 +162,8 @@ var exportStatus = &cli.Command{
 				&curDeal.Provider,
 				&curDeal.ChainDealID,
 				&curDeal.DatamodelSelector,
-				&eStart,
-				&eEnd,
+				&dStart,
+				&dEnd,
 			); err != nil {
 				return err
 			}
@@ -216,16 +216,14 @@ var exportStatus = &cli.Command{
 				n := "mainnet"
 				curDeal.Network = &n
 
-				if eStart != nil {
-					t := mainnetTime(*eStart)
-					curDeal.DealActivation = &t
-					tu := t.Unix()
+				if dStart != nil {
+					curDeal.DealActivation = dStart
+					tu := dStart.Unix()
 					curDeal.DealActivationUnix = &tu
 				}
-				if eEnd != nil {
-					t := mainnetTime(*eEnd)
-					curDeal.DealExpiration = &t
-					tu := t.Unix()
+				if dEnd != nil {
+					curDeal.DealExpiration = dEnd
+					tu := dEnd.Unix()
 					curDeal.DealExpirationUnix = &tu
 				}
 			}

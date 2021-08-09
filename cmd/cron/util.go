@@ -74,7 +74,7 @@ func cidListFromQuery(ctx context.Context, sql string, args ...interface{}) (map
 	return cidList, nil
 }
 
-func mainnetTime(filEpoch int64) time.Time { return time.Unix(filEpoch*30+1598306400, 0) }
+func mainnetTime(e filabi.ChainEpoch) time.Time { return time.Unix(int64(e)*30+1598306400, 0) }
 
 func ipfsAPI(cctx *cli.Context) *ipfsapi.Shell {
 	s := ipfsapi.NewShell(cctx.String("ipfs-api"))

@@ -192,8 +192,13 @@ CREATE TABLE IF NOT EXISTS cargo.deals (
   client TEXT NOT NULL REFERENCES cargo.clients ( client ),
   provider TEXT NOT NULL REFERENCES cargo.providers ( provider ),
   status TEXT NOT NULL,
-  epoch_start INTEGER NOT NULL CONSTRAINT valid_start CHECK ( epoch_start > 0 ),
-  epoch_end INTEGER NOT NULL CONSTRAINT valid_end CHECK ( epoch_end > 0 ),
+  status_meta TEXT,
+  start_epoch INTEGER NOT NULL CONSTRAINT valid_start CHECK ( start_epoch > 0 ),
+  start_time TIMESTAMP WITH TIME ZONE NOT NULL GENERATED ALWAYS AS ( TO_TIMESTAMP( start_epoch*30 + 1598306400 ) ) STORED,
+  end_epoch INTEGER NOT NULL CONSTRAINT valid_end CHECK ( end_epoch > 0 ),
+  end_time TIMESTAMP WITH TIME ZONE NOT NULL GENERATED ALWAYS AS ( TO_TIMESTAMP( start_epoch*30 + 1598306400 ) ) STORED,
+  sector_start_epoch INTEGER CONSTRAINT valid_sector_start CHECK ( sector_start_epoch > 0 ),
+  sector_start_time TIMESTAMP WITH TIME ZONE GENERATED ALWAYS AS ( TO_TIMESTAMP( sector_start_epoch*30 + 1598306400 ) ) STORED,
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
   entry_last_updated TIMESTAMP WITH TIME ZONE NOT NULL
 );

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -178,12 +179,26 @@ var trackDeals = &cli.Command{
 				clientLookup[d.Proposal.Client] = fc
 			}
 
+			var statusMeta *string
+			var sectorStart *filabi.ChainEpoch
 			status := "published"
 			if d.State.SectorStartEpoch > 0 {
+				sectorStart = &d.State.SectorStartEpoch
 				status = "active"
+				m := fmt.Sprintf(
+					"containing sector active as of %s at epoch %d",
+					mainnetTime(d.State.SectorStartEpoch).Format("2006-01-02 15:04:05"),
+					d.State.SectorStartEpoch,
+				)
+				statusMeta = &m
 			} else if d.Proposal.StartEpoch+filprovider.WPoStChallengeWindow < lts.Height() {
 				// if things are lookback+one deadlines late: they are never going to make it
 				status = "terminated"
+				m := fmt.Sprintf(
+					"containing sector missed expected sealing epoch %d",
+					d.Proposal.StartEpoch,
+				)
+				statusMeta = &m
 			}
 
 			if initialEncounter {
@@ -197,41 +212,51 @@ var trackDeals = &cli.Command{
 			_, err = db.Exec(
 				ctx,
 				`
-				INSERT INTO cargo.deals ( aggregate_cid, client, provider, status, deal_id, epoch_start, epoch_end )
-					VALUES ( $1, $2, $3, $4, $5, $6, $7 )
+				INSERT INTO cargo.deals ( aggregate_cid, client, provider, deal_id, start_epoch, end_epoch, status, status_meta, sector_start_epoch )
+					VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9 )
 				ON CONFLICT ( deal_id ) DO UPDATE SET
-					status = EXCLUDED.status
+					status = EXCLUDED.status,
+					status_meta = EXCLUDED.status_meta,
+					sector_start_epoch = COALESCE( EXCLUDED.sector_start_epoch, cargo.deals.sector_start_epoch )
 				`,
 				aggCid.String(),
 				clientLookup[d.Proposal.Client].robust.String(),
 				d.Proposal.Provider.String(),
-				status,
 				dealID,
 				d.Proposal.StartEpoch,
 				d.Proposal.EndEpoch,
+				status,
+				statusMeta,
+				sectorStart,
 			)
 			if err != nil {
 				return err
 			}
 		}
 
-		// we have some terminations ( no longer in the market state )
-		if len(knownDeals) > 0 {
-			toFail := make([]int64, 0, len(knownDeals))
-			for dID, d := range knownDeals {
-				if d.status == "terminated" {
-					continue
-				}
-				terminatedDealCount++
-				toFail = append(toFail, dID)
+		// we may have some terminations ( no longer in the market state )
+		toFail := make([]int64, 0, len(knownDeals))
+		for dID, d := range knownDeals {
+			if d.status == "terminated" {
+				continue
 			}
-
+			terminatedDealCount++
+			toFail = append(toFail, dID)
+		}
+		if len(toFail) > 0 {
 			_, err = db.Exec(
 				ctx,
 				`
-				UPDATE cargo.deals SET status = $1 WHERE deal_id = ANY ( $2::BIGINT[] )
+				UPDATE cargo.deals SET
+					status = $1,
+					status_meta = $2
+				WHERE
+					deal_id = ANY ( $3::BIGINT[] )
+						AND
+					status != 'terminated'
 				`,
 				`terminated`,
+				`deal no longer part of market-actor state`,
 				toFail,
 			)
 			if err != nil {
