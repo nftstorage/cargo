@@ -289,7 +289,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 
 		if err != nil {
 			if tx != nil {
-				tx.Rollback(context.Background()) // nolint:errcheck
+				tx.Rollback(context.Background()) //nolint:errcheck
 			}
 		} else if tx != nil {
 			err = tx.Commit(cctx.Context)

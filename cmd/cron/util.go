@@ -43,7 +43,7 @@ var (
 )
 
 func init() {
-	logging.SetLogLevel("*", "INFO") // nolint:errcheck
+	logging.SetLogLevel("*", "INFO") //nolint:errcheck
 }
 
 func cidv1(c cid.Cid) cid.Cid {

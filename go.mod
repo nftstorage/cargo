@@ -3,7 +3,7 @@ module github.com/nftstorage/dagcargo
 go 1.16
 
 require (
-	github.com/cloudflare/cloudflare-go v0.19.1-0.20210719033715-a6793ca87754
+	github.com/cloudflare/cloudflare-go v0.20.0
 	github.com/davecgh/go-spew v1.1.1
 	github.com/dustin/go-humanize v1.0.0
 	github.com/filecoin-project/go-address v0.0.6
@@ -33,6 +33,6 @@ require (
 	github.com/tmthrgd/atomics v0.0.0-20190904060638-dc7a5fcc7e0d // indirect
 	github.com/tmthrgd/tmpfile v0.0.0-20190904054337-6ce9e75706ab
 	github.com/urfave/cli/v2 v2.3.0
-	golang.org/x/sys v0.0.0-20210630005230-0f9fa26af87c
+	golang.org/x/sys v0.0.0-20210809203939-894668206c86
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1
 )

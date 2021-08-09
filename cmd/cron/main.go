@@ -183,7 +183,7 @@ var beforeCliSetup = func(cctx *cli.Context) error {
 			}
 		}
 
-		var firstCmdOccurence string
+		var firstCmdOccurrence string
 		for i := 1; i < len(os.Args); i++ {
 
 			// if we are in help context - no locks and no start/stop timers
@@ -191,23 +191,23 @@ var beforeCliSetup = func(cctx *cli.Context) error {
 				return nil
 			}
 
-			if firstCmdOccurence != "" {
+			if firstCmdOccurrence != "" {
 				continue
 			}
-			firstCmdOccurence = cmdNames[os.Args[i]]
+			firstCmdOccurrence = cmdNames[os.Args[i]]
 		}
 
 		// wrong cmd or something
-		if firstCmdOccurence == "" {
+		if firstCmdOccurrence == "" {
 			return nil
 		}
 
 		var err error
-		if currentCmdLock, err = fslock.Lock(os.TempDir(), "cargocron-"+firstCmdOccurence); err != nil {
+		if currentCmdLock, err = fslock.Lock(os.TempDir(), "cargocron-"+firstCmdOccurrence); err != nil {
 			return err
 		}
 
-		currentCmd = firstCmdOccurence
+		currentCmd = firstCmdOccurrence
 		log.Infow(fmt.Sprintf("=== BEGIN '%s' run", currentCmd))
 
 		// init the shared DB connection: do it here, since now we know the config *AND*

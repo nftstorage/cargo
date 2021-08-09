@@ -29,9 +29,9 @@ type faunaMutateAddAggregateEntries struct {
 		ID string `graphql:"_id"` // we always must pull *something* otherwise gql won't dance
 	} `graphql:"addAggregateEntries( dataCid:$aCid, entries:$aggEntries )"`
 }
-type Long int64
-type DealStatus string
-type AggregateEntryInput struct {
+type Long int64                   //nolint:revive
+type DealStatus string            //nolint:revive
+type AggregateEntryInput struct { //nolint:revive
 	cidKey            string
 	Cid               string  `json:"cid"`
 	DataModelSelector *string `json:"dataModelSelector"`
@@ -204,7 +204,7 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 
 		// either the aggregate cid changed or the batch is too big
 		if (curAggCid != "" && curAggCid != aCidStr) || len(curAggEntries) >= faunaBatchSize {
-			if err := faunaUploadEnriesAndMarkUpdated(ctx, project, gql, t0, curAggCid, curAggEntries); err != nil {
+			if err := faunaUploadEntriesAndMarkUpdated(ctx, project, gql, t0, curAggCid, curAggEntries); err != nil {
 				return err
 			}
 			countUpdated += len(curAggEntries)
@@ -223,7 +223,7 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 	}
 
 	if len(curAggEntries) > 0 {
-		if err := faunaUploadEnriesAndMarkUpdated(ctx, project, gql, t0, curAggCid, curAggEntries); err != nil {
+		if err := faunaUploadEntriesAndMarkUpdated(ctx, project, gql, t0, curAggCid, curAggEntries); err != nil {
 			return err
 		}
 		countUpdated += len(curAggEntries)
@@ -232,7 +232,7 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 	return nil
 }
 
-func faunaUploadEnriesAndMarkUpdated(ctx context.Context, project faunaProject, gql *graphql.Client, updStartTime time.Time, aggCid string, entries []AggregateEntryInput) error {
+func faunaUploadEntriesAndMarkUpdated(ctx context.Context, project faunaProject, gql *graphql.Client, updStartTime time.Time, aggCid string, entries []AggregateEntryInput) error {
 
 	markDone := make([]string, len(entries))
 	for i := range entries {

@@ -488,7 +488,7 @@ var aggregateDags = &cli.Command{
 					-- don't go with big dags, don't risk it
 					d.size_actual IS NOT NULL AND d.size_actual < $1
 						AND
-					-- do not republish deleted/deprioritized dags
+					-- do not republish deleted/de-prioritized dags
 					EXISTS (
 						SELECT 42
 							FROM cargo.dag_sources ds
@@ -717,9 +717,9 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	if err != nil {
 		return nil, err
 	}
-	defer carTmpFile.Close() // nolint:errcheck
+	defer carTmpFile.Close() //nolint:errcheck
 	if realFile {
-		os.Remove(carTmpFile.Name()) // nolint:errcheck
+		os.Remove(carTmpFile.Name()) //nolint:errcheck
 		return nil, xerrors.New("TempFile() did not create an anonymous temp file as expected")
 	}
 
@@ -752,7 +752,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 		if err != nil {
 			errCh <- err
 		} else {
-			defer resp.Output.Close() // nolint:errcheck
+			defer resp.Output.Close() //nolint:errcheck
 			_, err = io.Copy(io.Discard, resp.Output)
 			if err != nil {
 				errCh <- err
@@ -898,7 +898,7 @@ watchdog:
 			err = ctx.Err()
 		}
 		if err != nil && tx != nil {
-			tx.Rollback(context.Background()) // nolint:errcheck
+			tx.Rollback(context.Background()) //nolint:errcheck
 		}
 	}()
 
@@ -950,7 +950,7 @@ watchdog:
 		return nil, err
 	}
 
-	os.Chmod(fn, unixReadable) // nolint:errcheck
+	os.Chmod(fn, unixReadable) //nolint:errcheck
 
 	log.Infof("%s: successfully recorded and reified %s bytes (%.2f%% of projected) at %s",
 		aggLabel,
