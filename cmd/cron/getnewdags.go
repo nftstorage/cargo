@@ -34,13 +34,20 @@ type sourceToken struct {
 	Label string `graphql:"name" json:"label,omitempty"`
 }
 
-type user struct {
+// query/result for grabbing user list
+type faunaQueryUsers struct {
+	FindUsersByCreated struct {
+		CursorNext *string `graphql:"after"`
+		Data       []faunaQueryUsersResult
+	} `graphql:"findUsersByCreated (from: $since _cursor: $cursor_position _size: $page_size)"`
+}
+type faunaQueryUsersResult struct {
 	UserID  string `graphql:"_id"`
 	Created time.Time
 	dagSourceMeta
 }
 
-// query/result for grabbing updates
+// query/result for grabbing dag updates
 type faunaQueryDags struct {
 	FindUploadsCreatedAfter struct {
 		CursorNext *string `graphql:"after"`
@@ -63,12 +70,12 @@ type faunaQueryDagsResult struct {
 			}
 		}
 	}
-	User      user
+	User      faunaQueryUsersResult
 	AuthToken sourceToken
 }
 
 var sysUserTime, _ = time.Parse("2006-01-02", "2021-08-01")
-var sysUser = user{
+var sysUser = faunaQueryUsersResult{
 	dagSourceMeta: dagSourceMeta{
 		Name: "INTERNAL SYSTEM USER",
 	},
@@ -81,8 +88,8 @@ var getNewDags = &cli.Command{
 	Name:  "get-new-dags",
 	Flags: []cli.Flag{
 		&cli.UintFlag{
-			Name:  "skip-uploads-aged",
-			Usage: "Query the states of uploads last changed within that many days",
+			Name:  "skip-entries-aged",
+			Usage: "Query the states of uploads and users last changed within that many days",
 			Value: 3,
 		},
 	},
@@ -149,7 +156,7 @@ var getNewDags = &cli.Command{
 
 func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownAggregates map[cid.Cid]struct{}) error {
 
-	cutoff := time.Now().Add(time.Hour * -24 * time.Duration(cctx.Uint("skip-uploads-aged")))
+	cutoff := time.Now().Add(time.Hour * -24 * time.Duration(cctx.Uint("skip-entries-aged")))
 
 	var newSources, totalQueryDags, newDags, newPending, removedDags int
 	defer func() {
@@ -174,7 +181,37 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 	if err != nil {
 		return err
 	}
+
+	seenSources := make(map[string]int64)
 	var cursorNext *graphql.String
+
+	for {
+		var resultPage faunaQueryUsers
+		if err := gql.Query(cctx.Context, &resultPage, map[string]interface{}{
+			"page_size":       graphql.Int(faunaPageSize),
+			"cursor_position": cursorNext,
+			"since":           cutoff,
+		}); err != nil {
+			return err
+		}
+
+		for _, u := range resultPage.FindUsersByCreated.Data {
+			srcid, isNew, err := upsertUser(cctx.Context, project.id, u)
+			if err != nil {
+				return err
+			}
+			if isNew {
+				newSources++
+			}
+			seenSources[u.UserID] = srcid
+		}
+
+		if resultPage.FindUsersByCreated.CursorNext == nil {
+			break
+		}
+		cursorNext = (*graphql.String)(resultPage.FindUsersByCreated.CursorNext)
+	}
+
 	for {
 		var resultPage faunaQueryDags
 		if err := gql.Query(cctx.Context, &resultPage, map[string]interface{}{
@@ -184,8 +221,6 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 		}); err != nil {
 			return err
 		}
-
-		seenSources := make(map[string]int64)
 
 		for _, d := range resultPage.FindUploadsCreatedAfter.Data {
 
@@ -220,7 +255,7 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 					pendingPinForUser = d.User.UserID
 
 					// create the user so we do not lose track of them
-					if _, _, err := createUser(cctx.Context, project.id, d); err != nil {
+					if _, _, err := upsertUser(cctx.Context, project.id, d.User); err != nil {
 						return err
 					}
 
@@ -230,7 +265,7 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 			}
 
 			if _, known := seenSources[d.User.UserID]; !known {
-				srcid, isNew, err := createUser(cctx.Context, project.id, d)
+				srcid, isNew, err := upsertUser(cctx.Context, project.id, d.User)
 				if err != nil {
 					return err
 				}
@@ -311,16 +346,16 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 	return nil
 }
 
-func createUser(ctx context.Context, projID int, d faunaQueryDagsResult) (srcid int64, isNew bool, _ error) {
+func upsertUser(ctx context.Context, projID int, u faunaQueryUsersResult) (srcid int64, isNew bool, _ error) {
 
 	sourceMeta, err := json.Marshal(dagSourceMeta{
-		Github:        d.User.Github,
-		Name:          d.User.Name,
-		Email:         d.User.Email,
-		PublicAddress: d.User.PublicAddress,
-		Issuer:        d.User.Issuer,
-		Picture:       d.User.Picture,
-		UsedStorage:   d.User.UsedStorage,
+		Github:        u.Github,
+		Name:          u.Name,
+		Email:         u.Email,
+		PublicAddress: u.PublicAddress,
+		Issuer:        u.Issuer,
+		Picture:       u.Picture,
+		UsedStorage:   u.UsedStorage,
 	})
 	if err != nil {
 		return 0, false, err
@@ -336,8 +371,8 @@ func createUser(ctx context.Context, projID int, d faunaQueryDagsResult) (srcid 
 		RETURNING srcid, (xmax = 0)
 		`,
 		projID,
-		d.User.UserID,
-		d.User.Created,
+		u.UserID,
+		u.Created,
 		sourceMeta,
 	).Scan(&srcid, &isNew)
 	if err != nil {
