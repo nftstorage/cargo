@@ -184,6 +184,9 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 					return err
 				}
 
+				if dealStatusDesc == nil {
+					dealStatusDesc = new(string)
+				}
 				if err := gql.Mutate(ctx, new(faunaMutateUpsertDeal), map[string]interface{}{
 					"aCid":       graphql.String(aCidStr),
 					"provider":   graphql.String(provider),
@@ -192,7 +195,7 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 					"dealEnd":    dealEnd,
 					"status":     DealStatus(strings.Title(dealStatus)),
 					"statusLong": graphql.String(*dealStatusDesc),
-				}); err != nil && err.Error() != "Instance is not unique." {
+				}); err != nil {
 					return err
 				}
 				countDeals++
