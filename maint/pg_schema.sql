@@ -250,6 +250,80 @@ CREATE TABLE IF NOT EXISTS cargo.deal_events (
 CREATE INDEX IF NOT EXISTS deal_events_deal_id ON cargo.deal_events ( deal_id );
 
 
+CREATE OR REPLACE VIEW cargo.aggregate_summary AS (
+  WITH
+  per_project_membership AS (
+    SELECT ae.aggregate_cid, s.project, COUNT(distinct(cid_v1)) AS cnt
+      FROM cargo.aggregate_entries ae
+      JOIN cargo.dag_sources ds USING ( cid_v1 )
+      JOIN cargo.sources s USING ( srcid )
+    GROUP BY ae.aggregate_cid, s.project
+  ),
+  per_project_zero_replicas AS (
+    SELECT ae.aggregate_cid, s.project, COUNT(distinct(cid_v1)) AS cnt
+      FROM cargo.aggregate_entries ae
+      JOIN cargo.dag_sources ds USING ( cid_v1 )
+      JOIN cargo.sources s USING ( srcid )
+    WHERE NOT EXISTS (
+      SELECT 42
+        FROM cargo.aggregate_entries ae2, cargo.deals de
+      WHERE
+        ae.cid_v1 = ae2.cid_v1
+          AND
+        ae2.aggregate_cid = de.aggregate_cid
+          AND
+        de.status != 'terminated'
+    )
+    GROUP BY ae.aggregate_cid, s.project
+  )
+  SELECT
+    a.aggregate_cid,
+    a.piece_cid,
+    a.export_size AS car_size,
+    a.entry_created AS aggregated_at,
+    'https://cargo.web3.storage/deal-cars/'||aggregate_cid||'_'||piece_cid||'.car' AS web2_source,
+    ( SELECT COUNT(*) FROM cargo.deals d WHERE a.aggregate_cid = d.aggregate_cid AND d.status != 'terminated' ) AS tentative_replicas,
+    (
+      SELECT JSONB_OBJECT_AGG( k,v ) FROM (
+
+        SELECT 'any_project' AS k, COUNT(*) AS v FROM cargo.aggregate_entries ae WHERE ae.aggregate_cid = a.aggregate_cid
+
+          UNION ALL
+
+        SELECT 'project_' || project::TEXT AS k, cnt AS v FROM per_project_membership WHERE aggregate_cid = a.aggregate_cid
+
+          UNION ALL
+
+        SELECT 'zero_replicas_project_' || project::TEXT AS k, cnt AS v FROM per_project_zero_replicas WHERE aggregate_cid = a.aggregate_cid
+
+      ) j
+    ) AS dag_counts,
+    (
+      SELECT JSONB_OBJECT_AGG( k,v ) FROM (
+
+          SELECT 'pending' AS k, JSONB_BUILD_OBJECT( 'any_region', COUNT(*) ) AS v
+            FROM cargo.deals de
+          WHERE de.status = 'published' AND de.aggregate_cid = a.aggregate_cid
+
+        UNION ALL
+
+          SELECT 'active' AS k, JSONB_BUILD_OBJECT( 'any_region', COUNT(*) ) AS v
+            FROM cargo.deals de
+          WHERE de.status = 'active' AND de.aggregate_cid = a.aggregate_cid
+
+      ) j
+    ) AS replica_counts
+  FROM cargo.aggregates a
+  ORDER BY
+    -- first prioritize "contains dags with no replicas for proj1", here "false"/NULL sorts first
+    0 != ( SELECT cnt FROM per_project_zero_replicas z WHERE a.aggregate_cid = z.aggregate_cid and z.project = 1 ),
+    -- then count of anything "non-terminated"
+    tentative_replicas,
+    -- then order again by specific dag counts
+    ( SELECT COUNT(*) FROM per_project_membership m WHERE a.aggregate_cid = m.aggregate_cid AND  m.project = 1 ) DESC NULLS LAST,
+    ( SELECT COUNT(*) FROM cargo.aggregate_entries ae WHERE a.aggregate_cid = ae.aggregate_cid ) DESC NULLS LAST
+);
+
 CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
 
   SELECT u.*, s.project, COALESCE( s.weight, 100 ) AS weight

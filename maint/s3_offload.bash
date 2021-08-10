@@ -16,7 +16,7 @@ exec 1>>"$LOGDIR/s3_offload.log"
 exec 2>&1
 
 CARGO_DATADIR="/srv/cargo/CAR_DATA"
-CARGO_NGINX_REDIRECTS_INCLUDE="/srv/cargo/car_s3_redirects"
+CARGO_NGINX_REDIRECTS_INCLUDE="/srv/cargo/ETC/car_s3_redirects"
 export CARGO_S3_BUCKET="web3-storage-carstage"
 
 [[ -z "$(ls -A "$CARGO_DATADIR" )" ]] && exit 0

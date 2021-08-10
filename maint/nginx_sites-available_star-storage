@@ -12,13 +12,18 @@ server {
         try_files $uri $uri/ =404;
     }
 
-    location /deal-cars/ {
-        include /var/www/cargo/car_s3_redirects;
+    location /etc {
+        deny all;
+        return 404;
     }
 
-    location /system-logs/ {
+    location /deal-cars {
+        include /var/www/cargo/etc/car_s3_redirects;
+    }
+
+    location /system-logs {
         auth_basic "Ask ribasushi for credentials";
-        auth_basic_user_file /var/www/cargo/.htpasswd;
+        auth_basic_user_file /var/www/cargo/etc/.htpasswd;
 
         autoindex on;
         autoindex_exact_size off;
