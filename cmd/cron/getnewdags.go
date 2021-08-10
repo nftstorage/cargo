@@ -182,7 +182,7 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 		return err
 	}
 
-	seenSources := make(map[string]int64)
+	userLookup := make(map[string]int64)
 	var cursorNext *graphql.String
 
 	for {
@@ -195,15 +195,15 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 			return err
 		}
 
+		// pick up even users without uploads, for reporting purposes
 		for _, u := range resultPage.FindUsersByCreated.Data {
-			srcid, isNew, err := upsertUser(cctx.Context, project.id, u)
+			isNew, err := upsertUser(cctx.Context, project.id, userLookup, u)
 			if err != nil {
 				return err
 			}
 			if isNew {
 				newSources++
 			}
-			seenSources[u.UserID] = srcid
 		}
 
 		if resultPage.FindUsersByCreated.CursorNext == nil {
@@ -255,8 +255,12 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 					pendingPinForUser = d.User.UserID
 
 					// create the user so we do not lose track of them
-					if _, _, err := upsertUser(cctx.Context, project.id, d.User); err != nil {
+					isNew, err := upsertUser(cctx.Context, project.id, userLookup, d.User)
+					if err != nil {
 						return err
+					}
+					if isNew {
+						newSources++
 					}
 
 					d.AuthToken = sourceToken{}
@@ -264,15 +268,12 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 				}
 			}
 
-			if _, known := seenSources[d.User.UserID]; !known {
-				srcid, isNew, err := upsertUser(cctx.Context, project.id, d.User)
-				if err != nil {
-					return err
-				}
-				if isNew {
-					newSources++
-				}
-				seenSources[d.User.UserID] = srcid
+			isNew, err := upsertUser(cctx.Context, project.id, userLookup, d.User)
+			if err != nil {
+				return err
+			}
+			if isNew {
+				newSources++
 			}
 
 			em := dagSourceEntryMeta{
@@ -303,7 +304,6 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 				return err
 			}
 
-			var isNew bool
 			var entryLastUpdate time.Time
 			err = db.QueryRow(
 				cctx.Context,
@@ -317,7 +317,7 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 				`,
 				c.String(),
 				d.ID,
-				seenSources[d.User.UserID],
+				userLookup[d.User.UserID],
 				entryMeta,
 				d.Created,
 				d.Deleted,
@@ -346,7 +346,12 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 	return nil
 }
 
-func upsertUser(ctx context.Context, projID int, u faunaQueryUsersResult) (srcid int64, isNew bool, _ error) {
+func upsertUser(ctx context.Context, projID int, seen map[string]int64, u faunaQueryUsersResult) (isNew bool, _ error) {
+
+	// one upsert per round
+	if _, seen := seen[u.UserID]; seen {
+		return false, nil
+	}
 
 	sourceMeta, err := json.Marshal(dagSourceMeta{
 		Github:        u.Github,
@@ -358,9 +363,10 @@ func upsertUser(ctx context.Context, projID int, u faunaQueryUsersResult) (srcid
 		UsedStorage:   u.UsedStorage,
 	})
 	if err != nil {
-		return 0, false, err
+		return false, err
 	}
 
+	var srcid int64
 	err = db.QueryRow(
 		ctx,
 		`
@@ -376,8 +382,10 @@ func upsertUser(ctx context.Context, projID int, u faunaQueryUsersResult) (srcid
 		sourceMeta,
 	).Scan(&srcid, &isNew)
 	if err != nil {
-		return 0, false, err
+		return false, err
 	}
 
-	return srcid, isNew, nil
+	seen[u.UserID] = srcid
+
+	return isNew, nil
 }
