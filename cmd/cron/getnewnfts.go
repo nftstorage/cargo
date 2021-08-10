@@ -216,7 +216,8 @@ var getNewNftCids = &cli.Command{
 					ctx,
 					`
 					INSERT INTO cargo.sources ( project, source, entry_created, details ) VALUES ( $1, $2, $3, $4 )
-						ON CONFLICT ( project, source ) DO UPDATE SET details = COALESCE( sources.details, EXCLUDED.details ) -- no overwrites
+						ON CONFLICT ( project, source ) DO UPDATE SET
+							details = COALESCE( sources.details, EXCLUDED.details ) -- no overwrites
 					RETURNING srcid
 					`,
 					projectNftStorage,
@@ -235,7 +236,8 @@ var getNewNftCids = &cli.Command{
 				ctx,
 				`
 				INSERT INTO cargo.dag_sources ( cid_v1, source_key, srcid, entry_created ) VALUES ( $1, $2, $3, $4 )
-					ON CONFLICT ON CONSTRAINT singleton_dag_source_record DO UPDATE SET entry_removed = NULL
+					ON CONFLICT ON CONSTRAINT singleton_dag_source_record DO UPDATE SET
+						entry_removed = NULL
 				`,
 				cidNormStr,
 				cidOriginal.String(),

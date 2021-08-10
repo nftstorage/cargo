@@ -17,6 +17,7 @@ type dagSourceEntryMeta struct {
 	UploadType    string       `json:"upload_type,omitempty"`
 	TokenUsed     *sourceToken `json:"token_used,omitempty"`
 	ClaimedSize   int64        `json:"claimed_size,omitempty,string"`
+	PinnedAt      *time.Time   `json:"_pin_reported_at,omitempty"`
 	PinLagForUser string       `json:"_lagging_pin_redirect_from_user,omitempty"`
 }
 type dagSourceMeta struct {
@@ -66,7 +67,8 @@ type faunaQueryDagsResult struct {
 		DagSize   int64
 		Pins      struct {
 			Data []struct {
-				Status string
+				Status  string
+				Updated time.Time
 			}
 		}
 	}
@@ -125,7 +127,7 @@ var getNewDags = &cli.Command{
 		}
 
 		// we got that far: all good
-		// cleanup everything with a proper source that is also still attached to the sysuser
+		// cleanup all records of the sysuser than are now properly attached to the original source
 		_, err = db.Exec(
 			cctx.Context,
 			`
@@ -238,19 +240,28 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 			totalQueryDags++
 			var pendingPinForUser string
 
+			earliestPinSeen := new(time.Time)
+			pinStates := make(map[string]int)
+			for _, p := range d.Content.Pins.Data {
+				pinStates[p.Status]++
+				if p.Status == "Pinned" &&
+					(earliestPinSeen.IsZero() || earliestPinSeen.After(p.Updated)) {
+					*earliestPinSeen = p.Updated // copy
+				}
+			}
+			if earliestPinSeen.IsZero() {
+				// removes it from the JSON blob
+				earliestPinSeen = nil
+			}
+
 			// we might already have the CID - amount of pins not relevant
 			if _, avail := availableDags[c]; !avail {
 
 				// Only consider things with at least one `Pinned` state
 				// everything else may or may not be bogus
-				pinStates := make(map[string]int)
-				for _, p := range d.Content.Pins.Data {
-					pinStates[p.Status]++
-				}
-
 				if pinStates["Pinned"] == 0 {
-					// we are unlikely to find the data for this
-					// but we also want to register it *in case* things show up later
+					// we are *possibly* not going to find the data for this
+					// but we also want to register it *in case* sweepers find it
 					// to do that we swapout the user and proceed
 					pendingPinForUser = d.User.UserID
 
@@ -282,6 +293,7 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 				UploadType:    d.Type,
 				ClaimedSize:   d.Content.DagSize,
 				PinLagForUser: pendingPinForUser,
+				PinnedAt:      earliestPinSeen,
 			}
 			if d.AuthToken.ID != "" {
 				em.TokenUsed = &d.AuthToken
@@ -304,16 +316,30 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 				return err
 			}
 
-			var entryLastUpdate time.Time
+			var wasDeleted bool
 			err = db.QueryRow(
 				cctx.Context,
 				`
 				INSERT INTO cargo.dag_sources ( cid_v1, source_key, srcid, details, entry_created, entry_removed ) VALUES ( $1, $2, $3, $4, $5, $6 )
 					ON CONFLICT ON CONSTRAINT singleton_dag_source_record DO UPDATE SET
-						details = $4,
-						entry_created = $5,
-						entry_removed = $6
-				RETURNING (xmax = 0), entry_last_updated
+						details = EXCLUDED.details,
+						entry_created = EXCLUDED.entry_created,
+						entry_removed = EXCLUDED.entry_removed
+				RETURNING
+					(xmax = 0),
+					-- this select sees the table as it was before the upsert
+					-- the COALESCE is needed in case of INSERTs - we won't find anything prior
+					COALESCE (
+						(
+							SELECT entry_last_updated IS NOT NULL
+								FROM cargo.dag_sources resel
+							WHERE
+								resel.srcid = dag_sources.srcid
+									AND
+								resel.source_key = dag_sources.source_key
+						),
+						false
+					)
 				`,
 				c.String(),
 				d.ID,
@@ -321,12 +347,12 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 				entryMeta,
 				d.Created,
 				d.Deleted,
-			).Scan(&isNew, &entryLastUpdate)
+			).Scan(&isNew, &wasDeleted)
 			if err != nil {
 				return err
 			}
 
-			if d.Deleted != nil && time.Since(entryLastUpdate) < 5*time.Second {
+			if d.Deleted != nil && !wasDeleted {
 				removedDags++
 			} else if isNew {
 				if pendingPinForUser != "" {
