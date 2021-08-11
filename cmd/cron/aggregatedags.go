@@ -726,7 +726,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	workerCount := 3
 
 	api := ipfsAPI(cctx)
-	api.SetTimeout(6 * time.Hour)              // yes, obscene, but plausible
+	api.SetTimeout(2 * time.Hour)              // yes, obscene, but plausible
 	doneCh := make(chan struct{}, workerCount) // this effectively emulates a sync.WaitGroup
 	errCh := make(chan error, 1+1+2)           // exporter has defers
 

@@ -422,12 +422,15 @@ CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
   WITH
   incomplete_sources AS (
     SELECT
-      ml.srcid,
-      COUNT(*) AS count_missing,
-      MIN( ml.entry_created ) AS oldest_missing,
-      MAX( ml.entry_created ) AS newest_missing
-    FROM cargo.dags_missing_list ml
-    WHERE NOT ml.is_tombstone
+        ml.srcid,
+        COUNT(*) AS count_missing,
+        MIN( ml.entry_created ) AS oldest_missing,
+        MAX( ml.entry_created ) AS newest_missing
+      FROM cargo.dags_missing_list ml
+    WHERE
+      NOT ml.is_tombstone
+        AND
+      ml.entry_created < ( NOW() - '30 minutes'::INTERVAL )
     GROUP BY ml.srcid
   )
   SELECT
