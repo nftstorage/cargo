@@ -79,13 +79,14 @@ var trackDeals = &cli.Command{
 			return err
 		}
 
-		var stateDealCount, newDealCount, terminatedDealCount int
+		var newDealCount, terminatedDealCount int
+		dealTotals := make(map[string]int64)
 		defer func() {
 			log.Infow("summary",
 				"knownPieces", len(aggCidLookup),
-				"relatedDealsInState", stateDealCount,
-				"newDeals", newDealCount,
-				"terminatedDeals", terminatedDealCount,
+				"relatedDeals", dealTotals,
+				"newlyAdded", newDealCount,
+				"newlyTerminated", terminatedDealCount,
 			)
 		}()
 
@@ -124,7 +125,6 @@ var trackDeals = &cli.Command{
 				return err
 			}
 
-			stateDealCount++
 			var initialEncounter bool
 			if _, known := knownDeals[dealID]; !known {
 				initialEncounter = true
@@ -201,6 +201,7 @@ var trackDeals = &cli.Command{
 				statusMeta = &m
 			}
 
+			dealTotals[status]++
 			if initialEncounter {
 				if status == "terminated" {
 					terminatedDealCount++
@@ -237,6 +238,7 @@ var trackDeals = &cli.Command{
 		// we may have some terminations ( no longer in the market state )
 		toFail := make([]int64, 0, len(knownDeals))
 		for dID, d := range knownDeals {
+			dealTotals["terminated"]++
 			if d.status == "terminated" {
 				continue
 			}

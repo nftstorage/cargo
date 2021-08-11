@@ -32,4 +32,4 @@ GOLOG_LOG_FMT=json
 24,54 * * * *   LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && SWEEP_TIMEOUT_SEC=7200 SWEEP_MOST_AGE="90 days" SWEEP_LEAST_AGE="45 hours"  SWEEP_EXTRA_COND="AND weight != 42"                     $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/pin_sweep-long.log" 2>&1
 
 # list deals-to-be-made
-*/5 * * * *    $HOME/dagcargo/maint/export_pending_replication.bash
+*/5 * * * *     $HOME/dagcargo/maint/export_pending_replication.bash

@@ -22,6 +22,7 @@ CREATE OR REPLACE
     LANGUAGE plpgsql
 AS $$
 BEGIN
+  -- RAISE WARNING '%OLD:% %NEW:% %', E'\n', OLD, E'\n', NEW, E'\n';
   UPDATE cargo.dags SET entry_last_updated = NOW() WHERE cargo.dags.cid_v1 IN ( NEW.cid_v1, OLD.cid_v1 );
   RETURN NULL;
 END;
@@ -110,7 +111,7 @@ CREATE TRIGGER trigger_dag_update_on_related_source_insert_delete
 CREATE TRIGGER trigger_dag_update_on_related_source_change
   AFTER UPDATE OF weight ON cargo.sources
   FOR EACH ROW
-  WHEN ( COALESCE( OLD.weight, 100) != COALESCE( NEW.weight, 100 ) )
+  WHEN ( OLD.weight IS DISTINCT FROM NEW.weight )
   EXECUTE PROCEDURE cargo.update_source_dags_timestamps()
 ;
 
@@ -149,7 +150,11 @@ CREATE TRIGGER trigger_dag_source_updated
 CREATE TRIGGER trigger_dag_update_on_related_sources
   AFTER UPDATE OF source_key, entry_removed ON cargo.dag_sources
   FOR EACH ROW
-  WHEN (OLD IS DISTINCT FROM NEW)
+  WHEN (
+    OLD.source_key != NEW.source_key
+      OR
+    OLD.entry_removed IS DISTINCT FROM NEW.entry_removed
+  )
   EXECUTE PROCEDURE cargo.update_parent_dag_timestamp()
 ;
 

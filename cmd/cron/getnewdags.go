@@ -331,7 +331,7 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 					-- the COALESCE is needed in case of INSERTs - we won't find anything prior
 					COALESCE (
 						(
-							SELECT entry_last_updated IS NOT NULL
+							SELECT resel.entry_removed IS NOT NULL
 								FROM cargo.dag_sources resel
 							WHERE
 								resel.srcid = dag_sources.srcid
