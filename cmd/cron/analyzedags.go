@@ -203,7 +203,9 @@ var analyzeDags = &cli.Command{
 			progressTick = t.C
 			defer t.Stop()
 		}
+
 		var workerError error
+
 	watchdog:
 		for {
 			select {
@@ -216,8 +218,11 @@ var analyzeDags = &cli.Command{
 				}
 
 			case <-dumpWorkerState:
-				for i := 0; i < workerCount; i++ {
-					log.Infof("Worker #%d: %s", i, workerStates[i].Load().(string))
+				for i := 0; i < len(workerStates); i++ {
+					s := workerStates[i].Load().(string)
+					if s != "exitted" {
+						log.Infof("Worker #%d: %s", i, s)
+					}
 				}
 
 			case <-doneCh:
