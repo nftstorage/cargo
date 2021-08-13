@@ -96,7 +96,7 @@ var globalFlags = []cli.Flag{
 		Name:        "prometheus_push_url",
 		DefaultText: "  {{ private, read from config file }}  ",
 		Hidden:      true,
-		Destination: &promUrl,
+		Destination: &promURL,
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "prometheus_push_user",
@@ -112,7 +112,7 @@ var globalFlags = []cli.Flag{
 	}),
 }
 
-var promUrl, promUser, promPass string
+var promURL, promUser, promPass string
 var nonAlpha = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 
 func main() {
@@ -184,12 +184,12 @@ func main() {
 			successGauge.Set(0)
 		}
 
-		if promErr := prometheuspush.New(promUrl, cmdPrefix).
+		if promErr := prometheuspush.New(promURL, cmdPrefix).
 			BasicAuth(promUser, promPass).
 			Collector(tookGauge).
 			Collector(successGauge).
 			Push(); promErr != nil {
-			log.Warnf("push of prometheus metrics to %s failed: %s", promUrl, promErr)
+			log.Warnf("push of prometheus metrics to %s failed: %s", promURL, promErr)
 		}
 	}
 

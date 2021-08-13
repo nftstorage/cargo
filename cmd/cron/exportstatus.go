@@ -300,7 +300,7 @@ var countPromCounters, countPromGauges int
 func pushPrometheusMetrics(cctx *cli.Context) error {
 
 	ctx := cctx.Context
-	prom := prometheuspush.New(promUrl, "dagcargo").BasicAuth(promUser, promPass)
+	prom := prometheuspush.New(promURL, "dagcargo").BasicAuth(promUser, promPass)
 	snapshotTx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return err
