@@ -46,9 +46,9 @@ var captureAggregateCandidatesSnapshot bool
 var carExportDir string
 
 type pendingDag struct {
-	aggentry  dagaggregator.AggregateDagEntry
-	srcid     int64
-	firstSeen time.Time
+	aggentry    dagaggregator.AggregateDagEntry
+	srcid       int64
+	sourceStamp time.Time
 }
 
 type aggregateResult struct {
@@ -102,7 +102,7 @@ var aggregateDags = &cli.Command{
 		},
 		&cli.UintFlag{
 			Name:        "force-aggregation-hours",
-			Usage:       "When the pending set includes a CID that many hours old, mix in preexisting aggregates to make a new one",
+			Usage:       "When the pending set includes a CID that many hours old, mix in preexisting aggregates to force a new one",
 			Value:       12,
 			Destination: &forceAgeHours,
 		},
@@ -155,7 +155,7 @@ var aggregateDags = &cli.Command{
 					d.cid_v1,
 					d.size_actual,
 					( SELECT 1+COUNT(*) FROM cargo.refs r WHERE r.cid_v1 = d.cid_v1 ) AS node_count,
-					d.entry_created
+					ds.entry_last_updated
 				FROM cargo.dag_sources ds
 				JOIN cargo.dags d USING ( cid_v1 )
 				JOIN available_sources s USING ( srcid )
@@ -234,7 +234,7 @@ var aggregateDags = &cli.Command{
 			var pending pendingDag
 			var cidStr string
 
-			if err = rows.Scan(&pending.srcid, &cidStr, &pending.aggentry.UniqueBlockCumulativeSize, &pending.aggentry.UniqueBlockCount, &pending.firstSeen); err != nil {
+			if err = rows.Scan(&pending.srcid, &cidStr, &pending.aggentry.UniqueBlockCumulativeSize, &pending.aggentry.UniqueBlockCount, &pending.sourceStamp); err != nil {
 				return err
 			}
 
@@ -244,7 +244,7 @@ var aggregateDags = &cli.Command{
 			}
 
 			if forceAgeHours > 0 {
-				forceTimeboxedAggregation = forceTimeboxedAggregation || (pending.firstSeen.Before(forceCutoff))
+				forceTimeboxedAggregation = forceTimeboxedAggregation || (pending.sourceStamp.Before(forceCutoff))
 			}
 
 			statsSources[pending.srcid] = struct{}{}
