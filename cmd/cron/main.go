@@ -34,7 +34,7 @@ var globalFlags = []cli.Flag{
 	&cli.UintFlag{
 		Name:  "ipfs-api-timeout",
 		Usage: "HTTP API timeout in seconds",
-		Value: 270,
+		Value: 240,
 	},
 	&cli.UintFlag{
 		Name:  "ipfs-api-max-workers",

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"sync/atomic"
 	"time"
 
@@ -269,6 +270,8 @@ type refEntry struct {
 	Err string
 }
 
+var ipfsShutdownErrorRegex = regexp.MustCompile(`promise channel was closed$`)
+
 func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState *atomic.Value) (err error) {
 
 	api := ipfsAPI(cctx)
@@ -308,11 +311,15 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 		// If we fail to even pin: move on without an error ( we didn't write anything to the DB yet )
 		atomic.AddUint64(total.failed, 1)
 		msg := fmt.Sprintf("failure to pin %s: %s", rootCid, err)
-		if ue, castOk := err.(*url.Error); castOk && ue.Timeout() {
+
+		if ipfsShutdownErrorRegex.MatchString(msg) {
+			log.Debug(msg)
+		} else if ue, castOk := err.(*url.Error); castOk && ue.Timeout() {
 			log.Debug(msg)
 		} else {
 			log.Error(msg)
 		}
+
 		return nil
 	}
 
