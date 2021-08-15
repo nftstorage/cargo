@@ -39,7 +39,8 @@ var (
 	db *pgxpool.Pool // singleton populated in urfaveCLIs Before()
 
 	log          = logging.Logger(fmt.Sprintf("dagcargo-cron(%d)", os.Getpid()))
-	showProgress = isatty.IsTerminal(os.Stderr.Fd())
+	isTerm       = isatty.IsTerminal(os.Stderr.Fd())
+	showProgress = isTerm
 )
 
 func init() {

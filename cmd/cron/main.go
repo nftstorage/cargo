@@ -7,11 +7,14 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"time"
 
 	filactors "github.com/filecoin-project/specs-actors/actors/builtin"
 	fslock "github.com/ipfs/go-fs-lock"
 	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	prometheuspush "github.com/prometheus/client_golang/prometheus/push"
 	"github.com/urfave/cli/v2"
 	"github.com/urfave/cli/v2/altsrc"
 
@@ -89,7 +92,28 @@ var globalFlags = []cli.Flag{
 		DefaultText: "  {{ private, read from config file }}  ",
 		Hidden:      true,
 	}),
+	altsrc.NewStringFlag(&cli.StringFlag{
+		Name:        "prometheus_push_url",
+		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
+		Destination: &promURL,
+	}),
+	altsrc.NewStringFlag(&cli.StringFlag{
+		Name:        "prometheus_push_user",
+		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
+		Destination: &promUser,
+	}),
+	altsrc.NewStringFlag(&cli.StringFlag{
+		Name:        "prometheus_push_pass",
+		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
+		Destination: &promPass,
+	}),
 }
+
+var promURL, promUser, promPass string
+var nonAlpha = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 
 func main() {
 
@@ -130,30 +154,60 @@ func main() {
 		},
 	}).RunContext(ctx, os.Args)
 
-	logHdr := fmt.Sprintf("=== FINISH '%s' run", currentCmd)
-	logArgs := []interface{}{
-		"success", (err == nil),
-		"took", time.Since(t0).Truncate(time.Millisecond).String(),
+	// lambda to emit output on actual runs
+	// ( lock-contention does not count, see invocation below )
+	emitEndLogs := func(logSuccess bool) {
+
+		took := time.Since(t0).Truncate(time.Millisecond)
+		cmdPrefix := nonAlpha.ReplaceAllString("dagcargo_"+currentCmd, `_`)
+		logHdr := fmt.Sprintf("=== FINISH '%s' run", currentCmd)
+		logArgs := []interface{}{
+			"success", logSuccess,
+			"took", took.String(),
+		}
+
+		tookGauge := prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: fmt.Sprintf("%s_run_time", cmdPrefix),
+			Help: "How long did the job take (in milliseconds)",
+		})
+		tookGauge.Set(float64(took.Milliseconds()))
+		successGauge := prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: fmt.Sprintf("%s_success", cmdPrefix),
+			Help: "Whether the job completed with success(1) or failure(0)",
+		})
+
+		if logSuccess {
+			log.Infow(logHdr, logArgs...)
+			successGauge.Set(1)
+		} else {
+			log.Warnw(logHdr, logArgs...)
+			successGauge.Set(0)
+		}
+
+		if promErr := prometheuspush.New(promURL, cmdPrefix).
+			BasicAuth(promUser, promPass).
+			Collector(tookGauge).
+			Collector(successGauge).
+			Push(); promErr != nil {
+			log.Warnf("push of prometheus metrics to %s failed: %s", promURL, promErr)
+		}
 	}
 
 	if err != nil {
-
 		// if we are not interactive - be quiet on a failed lock
-		if !showProgress && errors.As(err, new(fslock.LockedError)) {
+		if !isTerm && errors.As(err, new(fslock.LockedError)) {
 			cleanup()
 			os.Exit(1)
 		}
 
 		log.Error(err)
 		if currentCmdLock != nil {
-			log.Warnw(logHdr, logArgs...)
+			emitEndLogs(false)
 		}
 		cleanup()
 		os.Exit(1)
-	}
-
-	if currentCmdLock != nil {
-		log.Infow(logHdr, logArgs...)
+	} else if currentCmdLock != nil {
+		emitEndLogs(true)
 	}
 }
 
