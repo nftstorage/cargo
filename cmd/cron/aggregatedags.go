@@ -1,15 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"text/template"
 	"time"
 
 	"github.com/dustin/go-humanize"
@@ -17,6 +21,7 @@ import (
 	"github.com/filecoin-project/go-dagaggregator-unixfs/lib/rambs"
 	commcid "github.com/filecoin-project/go-fil-commcid"
 	commp "github.com/filecoin-project/go-fil-commp-hashhash"
+	filabi "github.com/filecoin-project/go-state-types/abi"
 	"github.com/ipfs/go-blockservice"
 	"github.com/ipfs/go-cid"
 	ipfsapi "github.com/ipfs/go-ipfs-api"
@@ -30,6 +35,7 @@ import (
 	"github.com/multiformats/go-multihash"
 	"github.com/tmthrgd/tmpfile"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/net/context/ctxhttp"
 	"golang.org/x/xerrors"
 )
 
@@ -55,6 +61,7 @@ type aggregateResult struct {
 	standaloneEntries []dagaggregator.AggregateDagEntry
 	manifestEntries   []*dagaggregator.ManifestDagEntry
 	carSize           uint64
+	carPieceSize      filabi.PaddedPieceSize
 	carRoot           cid.Cid
 	carCommp          cid.Cid
 	carSha256         []byte
@@ -64,6 +71,23 @@ type runningTotals struct {
 	newAggregatesTotal       *uint64
 	dagsAggregatedStandalone *uint64
 	dagsAggregatedTotal      *uint64
+}
+
+type bidBotRequest struct {
+	AggregateCid      string           `json:"payloadCid"`
+	PieceCid          string           `json:"pieceCid"`
+	PaddedPieceSize   int64            `json:"pieceSize"`
+	ReplicationFactor uint             `json:"repFactor"`
+	DealStartTime     time.Time        `json:"deadline"`
+	DataSource        bidBotDatasource `json:"carURL"`
+}
+type bidBotDatasource struct {
+	URL string `json:"url"`
+}
+type bidBotResponse struct {
+	ID           string
+	AggregateCid cid.Cid
+	StatusCode   string `json:"status_code"`
 }
 
 var aggregateDags = &cli.Command{
@@ -449,6 +473,8 @@ var aggregateDags = &cli.Command{
 				undersizedInvalidCars = append(undersizedInvalidCars, newInvalidCars...)
 			}
 		}
+
+		//
 		// we did something OR we are not under sufficient pressure OR nothing to do: enough for this run
 		if *stats.newAggregatesTotal > 0 || !forceTimeboxedAggregation || len(undersizedInvalidCars) == 0 {
 			return nil
@@ -820,6 +846,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 			if err != nil {
 				return err
 			}
+			res.carPieceSize = filabi.PaddedPieceSize(paddedSize)
 
 			return nil
 		}()
@@ -960,7 +987,87 @@ watchdog:
 		fn,
 	)
 
+	// Aggregate ready to go, fire off a bidbot request
+	// The request is opportunistic, only log its errors, do not fail
+	if err := notifyBidBot(cctx, bidBotRequest{
+		AggregateCid:    root,
+		PieceCid:        res.carCommp.String(),
+		PaddedPieceSize: int64(res.carPieceSize),
+	}); err != nil {
+		log.Errorf("failed to register aggregate with BidBot, proceeding nevertheless: %s", err)
+	}
+
 	return res, nil
+}
+
+var datasourceTemplate *template.Template
+
+func notifyBidBot(cctx *cli.Context, reqData bidBotRequest) error {
+
+	//
+	// FIXME - bidbot is not concurrency-friendly at present, hold a pg-side lock
+	tx, err := db.Begin(cctx.Context)
+	if err != nil {
+		return xerrors.Errorf("unable to open workaround-lock-transaction: %w", err)
+	}
+	defer tx.Rollback(context.Background()) //nolint:errcheck
+	if _, err = tx.Exec(cctx.Context, `SELECT PG_ADVISORY_XACT_LOCK( 123456 )`); err != nil {
+		return xerrors.Errorf("unable to advisory-lock: %w", err)
+	}
+	// END FIXME
+	//
+
+	if datasourceTemplate == nil {
+		datasourceTemplate, err = template.New("").Parse(cctx.String("aggregate-location-template"))
+		if err != nil {
+			return xerrors.Errorf("unable to parse template '%s': %w", cctx.String("aggregate-location-template"), err)
+		}
+	}
+	datasourceURL := new(bytes.Buffer)
+	if err = datasourceTemplate.Execute(datasourceURL, reqData); err != nil {
+		return err
+	}
+
+	reqData.ReplicationFactor = cctx.Uint("bidbot-replication-factor")
+	reqData.DealStartTime = time.Now().Add(time.Hour * time.Duration(cctx.Uint("bidbot-deadline-hours")))
+	reqData.DataSource = bidBotDatasource{URL: datasourceURL.String()}
+	reqJSON, err := json.Marshal(reqData)
+	if err != nil {
+		return err
+	}
+
+	resp, err := ctxhttp.Post(
+		cctx.Context,
+		retryingClient(cctx.String("bidbot-token")),
+		cctx.String("bidbot-api"),
+		"application/json",
+		bytes.NewReader(reqJSON),
+	)
+	if err != nil {
+		return err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return xerrors.Errorf("request to BidBot failed with code %d\n%s", resp.StatusCode, string(body))
+	}
+
+	var respData bidBotResponse
+	if err = json.Unmarshal(body, &respData); err != nil {
+		return xerrors.Errorf("unable to parse BidBot response: %s\n%s", err, string(body))
+	}
+
+	log.Infow("bidbot registration successful",
+		"bidbotID", respData.ID,
+		"bidbotStatus", respData.StatusCode,
+		"aggregateCid", respData.AggregateCid.String(),
+		"repFactor", reqData.ReplicationFactor,
+		"deadline", reqData.DealStartTime,
+	)
+
+	return nil
 }
 
 // pulls cids from an AllKeysChan and sends them concurrently via multiple workers to an API

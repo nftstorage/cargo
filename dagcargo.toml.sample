@@ -3,6 +3,14 @@ pg-connstring = "postgres:///postgres?user=cargo&password=&host=/var/run/postgre
 lotus-api = "http://localhost:1234"
 
 ipfs-api = "http://localhost:5001"
+
+aggregate-location-template = "https://cargo.web3.storage/deal-cars/{{.AggregateCid}}_{{.PieceCid}}.car"
+
+bidbot-api = "..."
+bidbot-token = "..."
+bidbot-deadline-hours = 48
+bidbot-replication-factor = 5
+
 prometheus_push_url="..."
 prometheus_push_user="..."
 prometheus_push_pass="..."
