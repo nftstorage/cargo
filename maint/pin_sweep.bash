@@ -25,7 +25,7 @@ SWEEP_IPFSAPI="${SWEEP_IPFSAPI:-http://localhost:5001}"
 ###
 ###
 
-# Get list of pending cids, excluding anything repoted already pinned by daemon
+# Get list of pending cids, excluding anything reported already pinned by daemon
 cids_pending="$(
   comm -13 \
     <( curl -sXPOST "$SWEEP_IPFSAPI/api/v0/pin/ls?type=recursive" | jq -r '.Keys | to_entries | .[] | .key' | sort -u ) \

@@ -33,7 +33,7 @@ var analyzeDags = &cli.Command{
 		&cli.UintFlag{
 			Name:  "skip-dags-aged",
 			Usage: "If a dag is older than that many days - skip over it",
-			Value: 5,
+			Value: 1,
 		},
 	},
 	Action: func(cctx *cli.Context) error {

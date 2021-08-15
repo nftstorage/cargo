@@ -33,9 +33,8 @@ GOLOG_LOG_FMT=json
 # what follows is a set of "only pin, we will do the rest" jobs that help with:
 # - breaking up the outstanding queue and prioritizing it properly
 # - allowing looking back "further in time" to catch stragglers
-*/3 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && SWEEP_TIMEOUT_SEC=180  SWEEP_MOST_AGE="2 days"  SWEEP_LEAST_AGE="1 minutes" SWEEP_EXTRA_COND="AND weight >= 0 AND weight != 42"     $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/pin_sweep-immediate.log" 2>&1
-*/3 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && SWEEP_TIMEOUT_SEC=45   SWEEP_MOST_AGE="15 days" SWEEP_LEAST_AGE="1 minutes" SWEEP_EXTRA_COND="AND weight = 42 AND NOT is_tombstone" $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/pin_sweep-nez.log" 2>&1
-24,54 * * * *   LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && SWEEP_TIMEOUT_SEC=7200 SWEEP_MOST_AGE="90 days" SWEEP_LEAST_AGE="45 hours"  SWEEP_EXTRA_COND="AND weight != 42"                     $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/pin_sweep-long.log" 2>&1
+*/3 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && SWEEP_TIMEOUT_SEC=180  SWEEP_MOST_AGE="2 days"  SWEEP_LEAST_AGE="1 minutes" SWEEP_EXTRA_COND="AND weight >= 0 AND NOT is_tombstone"  $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/pin_sweep-immediate.log" 2>&1
+24,54 * * * *   LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && SWEEP_TIMEOUT_SEC=7200 SWEEP_MOST_AGE="90 days" SWEEP_LEAST_AGE="36 hours"  SWEEP_EXTRA_COND="AND NOT cluster_pin_lag"               $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/pin_sweep-long.log" 2>&1
 
 # list deals-to-be-made
 */5 * * * *     $HOME/dagcargo/maint/export_pending_replication.bash
