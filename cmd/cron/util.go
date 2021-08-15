@@ -154,22 +154,33 @@ func lotusLookbackTipset(cctx *cli.Context, api *lotusapi.FullNodeStruct) (*filt
 }
 
 func faunaClient(cctx *cli.Context, projectLabel string) (*graphql.Client, error) {
-	cctx.String("")
-
 	optName := "fauna-token-" + projectLabel
 	bearer := cctx.String(optName)
 	if bearer == "" {
 		return nil, xerrors.Errorf("config '%s' is not set", optName)
 	}
 
+	return graphql.NewClient(
+		cctx.String("fauna-api"),
+		retryingClient(bearer),
+	), nil
+}
+
+func retryingClient(bearerToken string) *http.Client {
+
 	rc := retryablehttp.NewClient()
 	rc.Logger = &retLogWrap{ipfslog: log}
 	rc.RetryWaitMin = 2 * time.Second
-	rc.RetryWaitMin = 25 * time.Second
+	rc.RetryWaitMax = 35 * time.Second
 	rc.RetryMax = 5
+	rc.CheckRetry = retryablehttp.ErrorPropagatedRetryPolicy
+
 	sc := rc.StandardClient()
-	sc.Transport = &authorizer{rt: sc.Transport, token: bearer}
-	return graphql.NewClient("https://graphql.fauna.com/graphql", sc), nil
+	if bearerToken != "" {
+		sc.Transport = &authorizer{rt: sc.Transport, token: bearerToken}
+	}
+
+	return sc
 }
 
 type retLogWrap struct{ ipfslog *logging.ZapEventLogger }

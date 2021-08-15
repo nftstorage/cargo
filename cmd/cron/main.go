@@ -83,6 +83,10 @@ var globalFlags = []cli.Flag{
 		Hidden:      true,
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
+		Name:   "fauna-api",
+		Hidden: true,
+	}),
+	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "fauna-token-w3s-prod",
 		DefaultText: "  {{ private, read from config file }}  ",
 		Hidden:      true,
