@@ -58,6 +58,11 @@ var globalFlags = []cli.Flag{
 		Value: "postgres:///postgres?user=cargo&password=&host=/var/run/postgresql",
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
+		Name:        "aggregate-location-template",
+		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
+	}),
+	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "cf-account",
 		DefaultText: "  {{ private, read from config file }}  ",
 		Hidden:      true,
@@ -113,6 +118,26 @@ var globalFlags = []cli.Flag{
 		DefaultText: "  {{ private, read from config file }}  ",
 		Hidden:      true,
 		Destination: &promPass,
+	}),
+	altsrc.NewStringFlag(&cli.StringFlag{
+		Name:        "bidbot-api",
+		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
+	}),
+	altsrc.NewStringFlag(&cli.StringFlag{
+		Name:        "bidbot-token",
+		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
+	}),
+	altsrc.NewIntFlag(&cli.IntFlag{
+		Name:        "bidbot-deadline-hours",
+		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
+	}),
+	altsrc.NewIntFlag(&cli.IntFlag{
+		Name:        "bidbot-replication-factor",
+		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
 	}),
 }
 

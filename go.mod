@@ -34,6 +34,7 @@ require (
 	github.com/tmthrgd/atomics v0.0.0-20190904060638-dc7a5fcc7e0d // indirect
 	github.com/tmthrgd/tmpfile v0.0.0-20190904054337-6ce9e75706ab
 	github.com/urfave/cli/v2 v2.3.0
+	golang.org/x/net v0.0.0-20210813160813-60bc85c4be6d
 	golang.org/x/sys v0.0.0-20210809222454-d867a43fc93e
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1
 )
