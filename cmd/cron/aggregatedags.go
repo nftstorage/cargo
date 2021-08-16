@@ -199,6 +199,7 @@ var aggregateDags = &cli.Command{
 					SELECT 42
 						FROM cargo.refs r
 						JOIN cargo.dag_sources rds USING ( cid_v1 )
+						JOIN cargo.dags rd USING ( cid_v1 )
 						JOIN available_sources asrc USING ( srcid )
 						LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
 					WHERE
@@ -206,22 +207,26 @@ var aggregateDags = &cli.Command{
 							AND
 						rds.entry_removed IS NULL
 							AND
+						rd.size_actual <= %[1]d
+							AND
 						rae.aggregate_cid IS NULL
 				)
 					AND
 				-- give enough time for metadata/containing dags to trickle in too, allowing for outages
 				(
-					ds.entry_created < ( NOW() - '%[2]s'::INTERVAL )
+					LEAST( ds.entry_created, d.entry_created ) <= ( NOW() - '%[2]s'::INTERVAL )
 						OR
 					EXISTS (
 						SELECT 42
 							FROM cargo.refs sr
+							JOIN cargo.dags sd
+								ON sr.ref_v1 = sd.cid_v1
 							JOIN cargo.dag_sources sds
 								ON sr.ref_v1 = sds.cid_v1 AND ds.srcid = sds.srcid
 						WHERE
 							ds.cid_v1 = sr.cid_v1
 								AND
-							sds.entry_created < ( NOW() - '%[2]s'::INTERVAL )
+							LEAST( sds.entry_created, sd.entry_created ) <= ( NOW() - '%[2]s'::INTERVAL )
 					)
 				)
 			ORDER BY s.weight DESC, s.oldest_unaggregated, s.srcid, d.size_actual DESC, d.cid_v1
