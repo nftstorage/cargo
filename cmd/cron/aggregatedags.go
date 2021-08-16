@@ -86,8 +86,8 @@ type bidBotDatasource struct {
 }
 type bidBotResponse struct {
 	ID           string
-	AggregateCid cid.Cid
-	StatusCode   string `json:"status_code"`
+	AggregateCid cid.Cid `json:"cid"`
+	StatusCode   string  `json:"status_code"`
 }
 
 var aggregateDags = &cli.Command{
