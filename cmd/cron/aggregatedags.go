@@ -40,8 +40,9 @@ import (
 )
 
 const (
-	targetMaxSize = uint64(34_000_000_000) // bytes of payload *before* .car overhead
-	aggregateType = "DagAggregate UnixFS"
+	defaultAggregateSettleDelayHours = 1
+	targetMaxSize                    = uint64(34_000_000_000) // bytes of payload *before* .car overhead
+	aggregateType                    = "DagAggregate UnixFS"
 
 	unixReadable = os.FileMode(0644)
 )
@@ -121,7 +122,7 @@ var aggregateDags = &cli.Command{
 		&cli.UintFlag{
 			Name:        "settle-delay-hours",
 			Usage:       "Amount of hours before considering an entry for inclusion",
-			Value:       1,
+			Value:       defaultAggregateSettleDelayHours,
 			Destination: &settleDelayHours,
 		},
 		&cli.UintFlag{
@@ -153,88 +154,7 @@ var aggregateDags = &cli.Command{
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
 
-		masterListSQL := fmt.Sprintf(
-			`
-			WITH available_sources AS (
-				SELECT
-						ds.srcid,
-						MIN(ds.entry_created) AS oldest_unaggregated,
-						COALESCE( s.weight, 100 ) AS weight
-					FROM cargo.dag_sources ds
-					JOIN cargo.sources s USING ( srcid )
-					JOIN cargo.dags d USING ( cid_v1 )
-					LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
-				WHERE
-					d.size_actual IS NOT NULL AND d.size_actual <= %[1]d -- only pinned entries (FIXME for now do not deal with oversizes/that comes later)
-						AND
-					( s.weight >= 0 OR s.weight IS NULL )
-						AND
-					ds.entry_removed IS NULL
-						AND
-					ae.cid_v1 IS NULL
-				GROUP BY ds.srcid, weight
-			)
-			SELECT
-					s.srcid,
-					d.cid_v1,
-					d.size_actual,
-					( SELECT 1+COUNT(*) FROM cargo.refs r WHERE r.cid_v1 = d.cid_v1 ) AS node_count,
-					ds.entry_last_updated
-				FROM cargo.dag_sources ds
-				JOIN cargo.dags d USING ( cid_v1 )
-				JOIN available_sources s USING ( srcid )
-				-- not yet aggregated anti-join (IS NULL below)
-				LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
-			WHERE
-				ds.entry_removed IS NULL
-					AND
-				-- only pinned entries (FIXME for now do not deal with oversizes/that comes later)
-				d.size_actual IS NOT NULL AND d.size_actual <= %[1]d
-					AND
-				-- not yet aggregated
-				ae.cid_v1 IS NULL
-					AND
-				-- exclude members of something else *that is subject to aggregation*
-				NOT EXISTS (
-					SELECT 42
-						FROM cargo.refs r
-						JOIN cargo.dag_sources rds USING ( cid_v1 )
-						JOIN cargo.dags rd USING ( cid_v1 )
-						JOIN available_sources asrc USING ( srcid )
-						LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
-					WHERE
-						r.ref_v1 = d.cid_v1
-							AND
-						rds.entry_removed IS NULL
-							AND
-						rd.size_actual <= %[1]d
-							AND
-						rae.aggregate_cid IS NULL
-				)
-					AND
-				-- give enough time for metadata/containing dags to trickle in too, allowing for outages
-				(
-					LEAST( ds.entry_created, d.entry_created ) <= ( NOW() - '%[2]s'::INTERVAL )
-						OR
-					EXISTS (
-						SELECT 42
-							FROM cargo.refs sr
-							JOIN cargo.dags sd
-								ON sr.ref_v1 = sd.cid_v1
-							JOIN cargo.dag_sources sds
-								ON sr.ref_v1 = sds.cid_v1 AND ds.srcid = sds.srcid
-						WHERE
-							ds.cid_v1 = sr.cid_v1
-								AND
-							LEAST( sds.entry_created, sd.entry_created ) <= ( NOW() - '%[2]s'::INTERVAL )
-					)
-				)
-			ORDER BY s.weight DESC, s.oldest_unaggregated, s.srcid, d.size_actual DESC, d.cid_v1
-			`,
-			targetMaxSize,
-			fmt.Sprintf("%d hours", settleDelayHours),
-		)
-
+		masterListSQL := eligibleForAggregationSQL(targetMaxSize, settleDelayHours)
 		// fmt.Println(masterListSQL)
 
 		var rows pgx.Rows
@@ -263,7 +183,7 @@ var aggregateDags = &cli.Command{
 			var pending pendingDag
 			var cidStr string
 
-			if err = rows.Scan(&pending.srcid, &cidStr, &pending.aggentry.UniqueBlockCumulativeSize, &pending.aggentry.UniqueBlockCount, &pending.sourceStamp); err != nil {
+			if err = rows.Scan(nil, &pending.srcid, &cidStr, &pending.aggentry.UniqueBlockCumulativeSize, &pending.aggentry.UniqueBlockCount, &pending.sourceStamp); err != nil {
 				return err
 			}
 
@@ -582,6 +502,92 @@ var aggregateDags = &cli.Command{
 		_, err = reifyAggregateCars(cctx, stats, [][]dagaggregator.AggregateDagEntry{finalDitchAgg})
 		return err
 	},
+}
+
+func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) string {
+	return fmt.Sprintf(
+		`
+		WITH active_sources AS (
+			SELECT
+					s.project,
+					ds.srcid,
+					MIN(ds.entry_created) AS oldest_unaggregated,
+					COALESCE( s.weight, 100 ) AS weight
+				FROM cargo.dag_sources ds
+				JOIN cargo.sources s USING ( srcid )
+				JOIN cargo.dags d USING ( cid_v1 )
+				LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
+			WHERE
+				( d.size_actual IS NOT NULL AND d.size_actual <= %[1]d ) -- only pinned entries (FIXME for now do not deal with oversizes/that comes later)
+					AND
+				( s.weight >= 0 OR s.weight IS NULL )
+					AND
+				ds.entry_removed IS NULL
+					AND
+				ae.cid_v1 IS NULL
+			GROUP BY s.project, ds.srcid, weight
+		)
+		SELECT
+				s.project,
+				s.srcid,
+				d.cid_v1,
+				d.size_actual,
+				( SELECT 1+COUNT(*) FROM cargo.refs r WHERE r.cid_v1 = d.cid_v1 ) AS node_count,
+				ds.entry_last_updated
+			FROM cargo.dag_sources ds
+			JOIN cargo.dags d USING ( cid_v1 )
+			JOIN active_sources s USING ( srcid )
+			-- not yet aggregated anti-join (IS NULL below)
+			LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
+		WHERE
+			ds.entry_removed IS NULL
+				AND
+			-- only pinned entries (FIXME for now do not deal with oversizes/that comes later)
+			( d.size_actual IS NOT NULL AND d.size_actual <= %[1]d )
+				AND
+			-- not yet aggregated
+			ae.cid_v1 IS NULL
+				AND
+			-- exclude members of something else *that is subject to aggregation*
+			NOT EXISTS (
+				SELECT 42
+					FROM cargo.refs r
+					JOIN cargo.dag_sources rds USING ( cid_v1 )
+					JOIN cargo.dags rd USING ( cid_v1 )
+					JOIN active_sources asrc USING ( srcid )
+					LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
+				WHERE
+					r.ref_v1 = d.cid_v1
+						AND
+					rds.entry_removed IS NULL
+						AND
+					rd.size_actual <= %[1]d
+						AND
+					rae.aggregate_cid IS NULL
+			)
+				AND
+			-- give enough time for metadata/containing dags to trickle in too, allowing for outages
+			(
+				LEAST( ds.entry_created, d.entry_created ) <= ( NOW() - '%[2]s'::INTERVAL )
+					OR
+				EXISTS (
+					SELECT 42
+						FROM cargo.refs sr
+						JOIN cargo.dags sd
+							ON sr.ref_v1 = sd.cid_v1
+						JOIN cargo.dag_sources sds
+							ON sr.ref_v1 = sds.cid_v1 AND ds.srcid = sds.srcid
+					WHERE
+						ds.cid_v1 = sr.cid_v1
+							AND
+						LEAST( sds.entry_created, sd.entry_created ) <= ( NOW() - '%[2]s'::INTERVAL )
+				)
+			)
+		ORDER BY s.weight DESC, s.oldest_unaggregated, s.srcid, d.size_actual DESC, d.cid_v1
+		`,
+		targetMaxSize,
+		fmt.Sprintf("%d hours", settleDelayHours),
+	)
 }
 
 var reifyRoundsCount int

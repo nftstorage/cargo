@@ -25,6 +25,11 @@ import (
 	"golang.org/x/xerrors"
 )
 
+var projects = map[string]string{
+	"0": "staging.web3.storage",
+	"1": "web3.storage",
+	"2": "nft.storage",
+}
 var faunaProjects = []faunaProject{
 	{id: 0, label: "w3s-stage"},
 	{id: 1, label: "w3s-prod"},

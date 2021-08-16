@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/hasura/go-graphql-client"
-	"github.com/jackc/pgx/v4"
 	"github.com/prometheus/client_golang/prometheus"
 	prometheuspush "github.com/prometheus/client_golang/prometheus/push"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/xerrors"
 )
 
 const faunaBatchSize = 9_000
@@ -47,7 +47,7 @@ type AggregateEntryInput struct { //nolint:revive
 //
 
 var exportStatus = &cli.Command{
-	Usage: "Export status of individual DAGs to external databases",
+	Usage: "Export service metrics and status of individual DAG entries to external databases",
 	Name:  "export-status",
 	Flags: []cli.Flag{},
 	Action: func(cctx *cli.Context) error {
@@ -62,7 +62,7 @@ var exportStatus = &cli.Command{
 			go func() {
 				defer wg.Done()
 				if err := updateDealStates(cctx, p); err != nil {
-					errCh <- err
+					errCh <- xerrors.Errorf("failure updating status of %s DAGs: %w", p.label, err)
 				}
 			}()
 		}
@@ -72,7 +72,7 @@ var exportStatus = &cli.Command{
 		go func() {
 			defer wg.Done()
 			if err := pushPrometheusMetrics(cctx); err != nil {
-				errCh <- err
+				errCh <- xerrors.Errorf("failure pushing prometheus metrics: %w", err)
 			}
 		}()
 
@@ -295,47 +295,9 @@ func faunaUploadEntriesAndMarkUpdated(ctx context.Context, project faunaProject,
 	return err
 }
 
-var countPromCounters, countPromGauges int
-
 func pushPrometheusMetrics(cctx *cli.Context) error {
 
-	ctx := cctx.Context
-	prom := prometheuspush.New(promURL, "dagcargo").BasicAuth(promUser, promPass)
-	snapshotTx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
-	if err != nil {
-		return err
-	}
-	defer snapshotTx.Rollback(context.Background()) //nolint:errcheck
-
-	projects := make(map[int64]string)
-	projRows, err := snapshotTx.Query(
-		ctx,
-		`
-		WITH projids AS ( SELECT DISTINCT( project ) AS p FROM cargo.sources	)
-		SELECT p, CASE
-			WHEN p = 0 THEN 'staging.web3.storage'
-			WHEN p = 1 THEN 'web3.storage'
-			WHEN p = 2 THEN 'nft.storage'
-			ELSE p::TEXT
-		END
-			FROM projids
-		`,
-	)
-	if err != nil {
-		return err
-	}
-	for projRows.Next() {
-		var pid int64
-		var pname string
-		if err := projRows.Scan(&pid, &pname); err != nil {
-			return err
-		}
-		projects[pid] = pname
-	}
-	if err := projRows.Err(); err != nil {
-		return err
-	}
-
+	var countPromCounters, countPromGauges int
 	defer func() {
 		log.Infow("prometheus push completed",
 			"counterMetrics", countPromCounters,
@@ -344,302 +306,144 @@ func pushPrometheusMetrics(cctx *cli.Context) error {
 		)
 	}()
 
-	if err := exportCounter(
-		ctx, snapshotTx, prom,
-		`dagcargo_handled_total_dags`, nil,
-		`How many unique DAGs did the service handle since inception`,
-		`SELECT COUNT(*) FROM cargo.dags`,
-	); err != nil {
+	jobQueue := make(chan cargoMetric, len(metricsList))
+	for _, m := range metricsList {
+		jobQueue <- m
+	}
+	close(jobQueue)
+
+	var mu sync.Mutex
+	prom := prometheuspush.New(promURL, "dagcargo").BasicAuth(promUser, promPass)
+
+	workerCount := 8
+	doneCh := make(chan struct{}, workerCount)
+	var firstErrorSeen error
+
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer func() { doneCh <- struct{}{} }()
+
+			for {
+				m, chanOpen := <-jobQueue
+				if !chanOpen {
+					return
+				}
+
+				cols, err := gatherMetric(cctx.Context, m)
+
+				mu.Lock()
+
+				if err != nil {
+					log.Errorf("failed gathering data for %s, continuing nevertheless: %s ", m.name, err)
+					if firstErrorSeen == nil {
+						firstErrorSeen = err
+					}
+				} else {
+					if m.kind == cargoMetricCounter {
+						countPromCounters += len(cols)
+					} else if m.kind == cargoMetricGauge {
+						countPromGauges += len(cols)
+					}
+					for _, c := range cols {
+						prom.Collector(c)
+					}
+				}
+
+				mu.Unlock()
+			}
+		}()
+	}
+
+	for workerCount > 0 {
+		<-doneCh
+		workerCount--
+	}
+
+	err := prom.Push()
+	if err != nil {
 		return err
 	}
 
-	if err := exportCounter(
-		ctx, snapshotTx, prom,
-		`dagcargo_handled_total_blocks`, nil,
-		`How many unique-by-cid blocks did the service handle since inception`,
-		`SELECT COUNT(*) FROM ( SELECT DISTINCT( ref_v1 ) FROM cargo.refs ) d`,
-	); err != nil {
-		return err
-	}
-
-	var dealStates []string
-	if err := snapshotTx.QueryRow(ctx, `SELECT ARRAY_AGG( DISTINCT( status )) FROM cargo.deals`).Scan(&dealStates); err != nil {
-		return err
-	}
-	for _, status := range dealStates {
-		if err := exportGauge(
-			ctx, snapshotTx, prom,
-			`dagcargo_filecoin_deals`, prometheus.Labels{"status": status}, `Count of filecoin deals for aggregates created by the service`,
-			`SELECT COUNT(*) FROM cargo.deals WHERE status = $1`,
-			status,
-		); err != nil {
-			return err
-		}
-	}
-
-	for projID, projName := range projects {
-		projLabel := prometheus.Labels{"project": projName}
-
-		if err := exportGauge(
-			ctx, snapshotTx, prom,
-			`dagcargo_sources_total_without_uploads`, projLabel, `Count of sources/users that have not yet stored a single DAG`,
-			`
-			SELECT COUNT(*)
-				FROM cargo.sources s
-			WHERE
-				s.project = $1
-					AND
-				NOT EXISTS ( SELECT 42 FROM cargo.dag_sources ds WHERE ds.srcid = s.srcid )
-			`,
-			projID,
-		); err != nil {
-			return err
-		}
-
-		if err := exportCounter(
-			ctx, snapshotTx, prom,
-			`dagcargo_sources_total_with_uploads`, projLabel, `Count of sources/users that have used the service to store data`,
-			`
-			SELECT COUNT(*)
-				FROM cargo.sources s
-			WHERE
-				s.project = $1
-					AND
-				EXISTS ( SELECT 42 FROM cargo.dag_sources ds WHERE ds.srcid = s.srcid )
-			`,
-			projID,
-		); err != nil {
-			return err
-		}
-
-		if err := exportGauge(
-			ctx, snapshotTx, prom,
-			`dagcargo_project_stored_items_active`, projLabel, `Count of non-deleted non-pending items stored per project`,
-			`
-			SELECT COUNT(*)
-				FROM cargo.dag_sources ds
-				JOIN cargo.sources s USING ( srcid )
-				JOIN cargo.dags d USING ( cid_v1 )
-			WHERE
-				s.project = $1
-					AND
-				( s.weight IS NULL OR s.weight >= 0 )
-					AND
-				d.size_actual IS NOT NULL
-					AND
-				ds.entry_removed IS NULL
-			`,
-			projID,
-		); err != nil {
-			return err
-		}
-
-		if err := exportGauge(
-			ctx, snapshotTx, prom,
-			`dagcargo_project_stored_items_deleted`, projLabel, `Count of items marked deleted per project`,
-			`
-			SELECT COUNT(*)
-				FROM cargo.dag_sources ds
-				JOIN cargo.sources s USING ( srcid )
-			WHERE
-				s.project = $1
-					AND
-				( s.weight IS NULL OR s.weight >= 0 )
-					AND
-				ds.entry_removed IS NOT NULL
-			`,
-			projID,
-		); err != nil {
-			return err
-		}
-
-		if err := exportGauge(
-			ctx, snapshotTx, prom,
-			`dagcargo_project_stored_items_pending`, projLabel, `Count of items pending retrieval from IPFS per project`,
-			`
-			SELECT COUNT(*)
-				FROM cargo.dag_sources ds
-				JOIN cargo.sources s USING ( srcid )
-				JOIN cargo.dags d USING ( cid_v1 )
-			WHERE
-				s.project = $1
-					AND
-				( s.weight IS NULL OR s.weight >= 0 )
-					AND
-				d.size_actual IS NULL
-					AND
-				ds.entry_removed IS NULL
-			`,
-			projID,
-		); err != nil {
-			return err
-		}
-
-		if err := exportGauge(
-			ctx, snapshotTx, prom,
-			`dagcargo_project_stored_bytes_active`, projLabel, `Amount of known per-DAG-deduplicated bytes stored per project`,
-			`
-			SELECT SUM(d.size_actual)
-				FROM cargo.dag_sources ds
-				JOIN cargo.sources s USING ( srcid )
-				JOIN cargo.dags d USING ( cid_v1 )
-			WHERE
-				s.project = $1
-					AND
-				( s.weight IS NULL OR s.weight >= 0 )
-					AND
-				d.size_actual IS NOT NULL
-					AND
-				ds.entry_removed IS NULL
-			`,
-			projID,
-		); err != nil {
-			return err
-		}
-
-		if err := exportGauge(
-			ctx, snapshotTx, prom,
-			`dagcargo_project_stored_bytes_deleted`, projLabel, `Amount of known per-DAG-deduplicated bytes retrieved and then marked deleted per project`,
-			`
-			SELECT SUM(d.size_actual)
-				FROM cargo.dag_sources ds
-				JOIN cargo.sources s USING ( srcid )
-				JOIN cargo.dags d USING ( cid_v1 )
-			WHERE
-				s.project = $1
-					AND
-				( s.weight IS NULL OR s.weight >= 0 )
-					AND
-				d.size_actual IS NOT NULL
-					AND
-				ds.entry_removed IS NOT NULL
-			`,
-			projID,
-		); err != nil {
-			return err
-		}
-
-		if err := exportGauge(
-			ctx, snapshotTx, prom,
-			`dagcargo_project_items_in_active_deals`, projLabel, `Count of aggregated items with at least one active deal per project`,
-			`
-			SELECT COUNT(*)
-				FROM cargo.dag_sources ds
-				JOIN cargo.sources s USING ( srcid )
-			WHERE
-				s.project = $1
-					AND
-				EXISTS (
-					SELECT 42
-						FROM cargo.aggregate_entries ae
-						JOIN cargo.deals de USING ( aggregate_cid )
-					WHERE
-						ae.cid_v1 = ds.cid_v1
-							AND
-						de.status = 'active'
-				)
-			`,
-			projID,
-		); err != nil {
-			return err
-		}
-
-		if err := exportGauge(
-			ctx, snapshotTx, prom,
-			`dagcargo_project_items_undealt_aggregates`, projLabel, `Count of aggregated items queued for initial deal per project`,
-			`
-			SELECT COUNT(*)
-				FROM cargo.dag_sources ds
-				JOIN cargo.sources s USING ( srcid )
-			WHERE
-				s.project = $1
-					AND
-				EXISTS ( SELECT 42 FROM cargo.aggregate_entries ae WHERE ae.cid_v1 = ds.cid_v1 )
-					AND
-				NOT EXISTS (
-					SELECT 42
-						FROM cargo.aggregate_entries ae
-						JOIN cargo.deals de USING ( aggregate_cid )
-					WHERE
-						ae.cid_v1 = ds.cid_v1
-							AND
-						de.status = 'active'
-				)
-			`,
-			projID,
-		); err != nil {
-			return err
-		}
-
-		if err := exportGauge(
-			ctx, snapshotTx, prom,
-			`dagcargo_project_items_unaggregated`, projLabel, `Count of items pending initial aggregate inclusion per project`,
-			`
-			SELECT COUNT(*)
-				FROM cargo.dag_sources ds
-				JOIN cargo.sources s USING ( srcid )
-				JOIN cargo.dags d USING ( cid_v1 )
-				LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
-			WHERE
-				s.project = $1
-					AND
-				( s.weight IS NULL OR s.weight >= 0 )
-					AND
-				d.size_actual IS NOT NULL
-					AND
-				ds.entry_removed IS NULL
-					AND
-				ae.cid_v1 IS NULL
-			`,
-			projID,
-		); err != nil {
-			return err
-		}
-	}
-
-	return prom.Push()
+	return firstErrorSeen
 }
 
-func exportCounter(
-	ctx context.Context,
-	tx pgx.Tx,
-	prom *prometheuspush.Pusher,
-	name string, labels prometheus.Labels,
-	help string,
-	querySQL string, queryParams ...interface{},
-) error {
+func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, error) {
 
-	var val int64
-	if err := tx.QueryRow(ctx, querySQL, queryParams...).Scan(&val); err != nil {
-		return err
+	t0 := time.Now()
+	rows, err := db.Query(ctx, m.query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	fd := rows.FieldDescriptions()
+	if len(fd) < 1 || len(fd) > 2 {
+		return nil, xerrors.Errorf("unexpected %d columns in resultset", len(fd))
 	}
 
-	c := prometheus.NewCounter(prometheus.CounterOpts{Name: name, Help: help, ConstLabels: labels})
-	c.Add(float64(val))
-	prom.Collector(c)
-	countPromCounters++
+	res := make(map[string]float64)
 
-	return nil
-}
+	if len(fd) == 1 {
 
-func exportGauge(
-	ctx context.Context,
-	tx pgx.Tx,
-	prom *prometheuspush.Pusher,
-	name string, labels prometheus.Labels,
-	help string,
-	querySQL string, queryParams ...interface{},
-) error {
+		if !rows.Next() {
+			return nil, xerrors.New("zero rows in result")
+		}
 
-	var val int64
-	if err := tx.QueryRow(ctx, querySQL, queryParams...).Scan(&val); err != nil {
-		return err
+		var val int64
+		if err := rows.Scan(&val); err != nil {
+			return nil, err
+		}
+
+		if rows.Next() {
+			return nil, xerrors.New("unexpectedly received more than one result")
+		}
+
+		res[""] = float64(val)
+
+	} else {
+
+		var group string
+		var val int64
+		for rows.Next() {
+
+			if err := rows.Scan(&group, &val); err != nil {
+				return nil, err
+			}
+
+			res[group] = float64(val)
+		}
 	}
 
-	g := prometheus.NewGauge(prometheus.GaugeOpts{Name: name, Help: help, ConstLabels: labels})
-	g.Set(float64(val))
-	prom.Collector(g)
-	countPromGauges++
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	took := time.Since(t0).Truncate(time.Millisecond).Seconds()
 
-	return nil
+	cl := make([]prometheus.Collector, 0)
+	for g, v := range res {
+		var label prometheus.Labels
+		if g != "" {
+			gType := string(fd[0].Name)
+			if gType == "project" && projects[g] != "" {
+				g = projects[g]
+			}
+			label = prometheus.Labels{gType: g}
+		}
+
+		if m.kind == cargoMetricCounter {
+			log.Infow("evaluatedCounter", "name", m.name, "label", label, "value", v, "tookSeconds", took)
+			c := prometheus.NewCounter(prometheus.CounterOpts{Name: m.name, Help: m.help, ConstLabels: label})
+			c.Add(v)
+			cl = append(cl, c)
+		} else if m.kind == cargoMetricGauge {
+			log.Infow("evaluatedGauge", "name", m.name, "label", label, "value", v, "tookSeconds", took)
+			c := prometheus.NewGauge(prometheus.GaugeOpts{Name: m.name, Help: m.help, ConstLabels: label})
+			c.Set(v)
+			cl = append(cl, c)
+		} else {
+			return nil, xerrors.Errorf("unknown metric kind '%s'", m.kind)
+		}
+	}
+
+	return cl, nil
 }
