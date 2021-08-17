@@ -315,7 +315,7 @@ func pushPrometheusMetrics(cctx *cli.Context) error {
 	var mu sync.Mutex
 	prom := prometheuspush.New(promURL, "dagcargo").BasicAuth(promUser, promPass)
 
-	workerCount := 8
+	workerCount := 24
 	doneCh := make(chan struct{}, workerCount)
 	var firstErrorSeen error
 

@@ -502,3 +502,165 @@ var metricsList = []cargoMetric{
 		),
 	},
 }
+
+// add some templated velocity-window metrics
+func init() {
+	for _, pct := range []int{50, 95} {
+		for _, days := range []int{1, 7} {
+
+			metricsList = append(metricsList, cargoMetric{
+				kind: cargoMetricGauge,
+				name: fmt.Sprintf("dagcargo_project_item_minutes_to_aggregate_%dday_%dpct", days, pct),
+				help: fmt.Sprintf("%d percentile minutes to first aggregate inclusion for entries added in the past %d days", pct, days),
+				query: fmt.Sprintf(
+					`
+					WITH
+						active_sources AS (
+							SELECT * FROM cargo.sources WHERE weight >= 0 OR weight IS NULL
+						),
+						q AS (
+							SELECT
+									s.project,
+									EXTRACT(EPOCH FROM
+										PERCENTILE_CONT(0.%d) WITHIN GROUP ( ORDER BY
+											(
+												SELECT MIN( a.entry_created )
+													FROM cargo.aggregates a
+													JOIN cargo.aggregate_entries ae
+														ON a.aggregate_cid = ae.aggregate_cid AND ae.cid_v1 = ds.cid_v1
+											) - ds.entry_created
+										)
+									)::INTEGER / 60 AS val
+								FROM active_sources s
+								JOIN cargo.dag_sources ds USING ( srcid )
+							WHERE
+								ds.entry_created > NOW() - '%d day'::INTERVAL
+									AND
+								-- if an entry came after aggregation - all bets/timings are off
+								NOT EXISTS (
+									SELECT 42
+										FROM cargo.aggregate_entries oae, cargo.aggregates oa
+									WHERE
+										oae.aggregate_cid = oa.aggregate_cid
+											AND
+										oae.cid_v1 = ds.cid_v1
+											AND
+										oa.entry_created <= ds.entry_created
+								)
+							GROUP BY s.project
+						)
+					SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+						FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
+						LEFT JOIN q USING ( project )
+					`,
+					pct,
+					days,
+				),
+			})
+
+			metricsList = append(metricsList, cargoMetric{
+				kind: cargoMetricGauge,
+				name: fmt.Sprintf("dagcargo_project_item_minutes_to_deal_published_%dday_%dpct", days, pct),
+				help: fmt.Sprintf("%d percentile minutes to first published deal for entries added in the past %d days", pct, days),
+				query: fmt.Sprintf(
+					`
+					WITH
+						active_sources AS (
+							SELECT * FROM cargo.sources WHERE weight >= 0 OR weight IS NULL
+						),
+						q AS (
+							SELECT
+									s.project,
+									EXTRACT(EPOCH FROM
+										PERCENTILE_CONT(0.%d) WITHIN GROUP ( ORDER BY
+											(
+												SELECT MIN( dev.entry_created )
+													FROM cargo.aggregate_entries ae
+													JOIN cargo.deals de
+														ON ae.aggregate_cid = de.aggregate_cid AND ae.cid_v1 = ds.cid_v1
+													JOIN cargo.deal_events dev
+														ON de.deal_id = dev.deal_id AND dev.status = 'published'
+											) - ds.entry_created
+										)
+									)::INTEGER / 60 AS val
+								FROM active_sources s
+								JOIN cargo.dag_sources ds USING ( srcid )
+							WHERE
+								ds.entry_created > NOW() - '%d day'::INTERVAL
+									AND
+								-- if an entry came after aggregation - all bets/timings are off
+								NOT EXISTS (
+									SELECT 42
+										FROM cargo.aggregate_entries oae, cargo.aggregates oa
+									WHERE
+										oae.aggregate_cid = oa.aggregate_cid
+											AND
+										oae.cid_v1 = ds.cid_v1
+											AND
+										oa.entry_created <= ds.entry_created
+								)
+							GROUP BY s.project
+						)
+					SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+						FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
+						LEFT JOIN q USING ( project )
+					`,
+					pct,
+					days,
+				),
+			})
+
+			metricsList = append(metricsList, cargoMetric{
+				kind: cargoMetricGauge,
+				name: fmt.Sprintf("dagcargo_project_item_minutes_to_deal_active_%dday_%dpct", days, pct),
+				help: fmt.Sprintf("%d percentile minutes to first active deal for entries added in the past %d days", pct, days),
+				query: fmt.Sprintf(
+					`
+					WITH
+						active_sources AS (
+							SELECT * FROM cargo.sources WHERE weight >= 0 OR weight IS NULL
+						),
+						q AS (
+							SELECT
+									s.project,
+									EXTRACT(EPOCH FROM
+										PERCENTILE_CONT(0.%d) WITHIN GROUP ( ORDER BY
+											(
+												SELECT MIN( dev.entry_created )
+													FROM cargo.aggregate_entries ae
+													JOIN cargo.deals de
+														ON ae.aggregate_cid = de.aggregate_cid AND ae.cid_v1 = ds.cid_v1
+													JOIN cargo.deal_events dev
+														ON de.deal_id = dev.deal_id AND dev.status = 'active'
+											) - ds.entry_created
+										)
+									)::INTEGER / 60 AS val
+								FROM active_sources s
+								JOIN cargo.dag_sources ds USING ( srcid )
+							WHERE
+								ds.entry_created > NOW() - '%d day'::INTERVAL
+									AND
+								-- if an entry came after aggregation - all bets/timings are off
+								NOT EXISTS (
+									SELECT 42
+										FROM cargo.aggregate_entries oae, cargo.aggregates oa
+									WHERE
+										oae.aggregate_cid = oa.aggregate_cid
+											AND
+										oae.cid_v1 = ds.cid_v1
+											AND
+										oa.entry_created <= ds.entry_created
+								)
+							GROUP BY s.project
+						)
+					SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+						FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
+						LEFT JOIN q USING ( project )
+					`,
+					pct,
+					days,
+				),
+			})
+		}
+	}
+}
