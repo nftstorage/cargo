@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"github.com/hasura/go-graphql-client"
-	"github.com/prometheus/client_golang/prometheus"
-	prometheuspush "github.com/prometheus/client_golang/prometheus/push"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
 )
@@ -33,8 +31,6 @@ type faunaMutateAddAggregateEntries struct {
 		ID string `graphql:"_id"` // we always must pull *something* otherwise gql won't dance
 	} `graphql:"addAggregateEntries( dataCid:$aCid, entries:$aggEntries )"`
 }
-type Long int64                   //nolint:revive
-type DealStatus string            //nolint:revive
 type AggregateEntryInput struct { //nolint:revive
 	cidKey            string
 	Cid               string  `json:"cid"`
@@ -66,15 +62,6 @@ var exportStatus = &cli.Command{
 				}
 			}()
 		}
-
-		// fire off prometheus update
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := pushPrometheusMetrics(cctx); err != nil {
-				errCh <- xerrors.Errorf("failure pushing prometheus metrics: %w", err)
-			}
-		}()
 
 		wg.Wait()
 		close(errCh) // no more writers
@@ -213,13 +200,18 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 				if dealStatusDesc == nil {
 					dealStatusDesc = new(string)
 				}
+				dealStatus = strings.Title(dealStatus)
+
+				type Long int64        //nolint:revive
+				type DealStatus string //nolint:revive
+
 				if err := gql.Mutate(ctx, new(faunaMutateUpsertDeal), map[string]interface{}{
 					"aCid":       graphql.String(aCidStr),
 					"provider":   graphql.String(provider),
 					"dealID":     Long(dealID),
 					"dealStart":  dealStart,
 					"dealEnd":    dealEnd,
-					"status":     DealStatus(strings.Title(dealStatus)),
+					"status":     DealStatus(dealStatus),
 					"statusLong": graphql.String(*dealStatusDesc),
 				}); err != nil {
 					return err
@@ -293,157 +285,4 @@ func faunaUploadEntriesAndMarkUpdated(ctx context.Context, project faunaProject,
 		markDone,
 	)
 	return err
-}
-
-func pushPrometheusMetrics(cctx *cli.Context) error {
-
-	var countPromCounters, countPromGauges int
-	defer func() {
-		log.Infow("prometheus push completed",
-			"counterMetrics", countPromCounters,
-			"gaugeMetrics", countPromGauges,
-			"projects", len(projects),
-		)
-	}()
-
-	jobQueue := make(chan cargoMetric, len(metricsList))
-	for _, m := range metricsList {
-		jobQueue <- m
-	}
-	close(jobQueue)
-
-	var mu sync.Mutex
-	prom := prometheuspush.New(promURL, "dagcargo").BasicAuth(promUser, promPass)
-
-	workerCount := 24
-	doneCh := make(chan struct{}, workerCount)
-	var firstErrorSeen error
-
-	for i := 0; i < workerCount; i++ {
-		go func() {
-			defer func() { doneCh <- struct{}{} }()
-
-			for {
-				m, chanOpen := <-jobQueue
-				if !chanOpen {
-					return
-				}
-
-				cols, err := gatherMetric(cctx.Context, m)
-
-				mu.Lock()
-
-				if err != nil {
-					log.Errorf("failed gathering data for %s, continuing nevertheless: %s ", m.name, err)
-					if firstErrorSeen == nil {
-						firstErrorSeen = err
-					}
-				} else {
-					if m.kind == cargoMetricCounter {
-						countPromCounters += len(cols)
-					} else if m.kind == cargoMetricGauge {
-						countPromGauges += len(cols)
-					}
-					for _, c := range cols {
-						prom.Collector(c)
-					}
-				}
-
-				mu.Unlock()
-			}
-		}()
-	}
-
-	for workerCount > 0 {
-		<-doneCh
-		workerCount--
-	}
-
-	err := prom.Push()
-	if err != nil {
-		return err
-	}
-
-	return firstErrorSeen
-}
-
-func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, error) {
-
-	t0 := time.Now()
-	rows, err := db.Query(ctx, m.query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	fd := rows.FieldDescriptions()
-	if len(fd) < 1 || len(fd) > 2 {
-		return nil, xerrors.Errorf("unexpected %d columns in resultset", len(fd))
-	}
-
-	res := make(map[string]float64)
-
-	if len(fd) == 1 {
-
-		if !rows.Next() {
-			return nil, xerrors.New("zero rows in result")
-		}
-
-		var val int64
-		if err := rows.Scan(&val); err != nil {
-			return nil, err
-		}
-
-		if rows.Next() {
-			return nil, xerrors.New("unexpectedly received more than one result")
-		}
-
-		res[""] = float64(val)
-
-	} else {
-
-		var group string
-		var val int64
-		for rows.Next() {
-
-			if err := rows.Scan(&group, &val); err != nil {
-				return nil, err
-			}
-
-			res[group] = float64(val)
-		}
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	took := time.Since(t0).Truncate(time.Millisecond).Seconds()
-
-	cl := make([]prometheus.Collector, 0)
-	for g, v := range res {
-		var label prometheus.Labels
-		if g != "" {
-			gType := string(fd[0].Name)
-			if gType == "project" && projects[g] != "" {
-				g = projects[g]
-			}
-			label = prometheus.Labels{gType: g}
-		}
-
-		if m.kind == cargoMetricCounter {
-			log.Infow("evaluatedCounter", "name", m.name, "label", label, "value", v, "tookSeconds", took)
-			c := prometheus.NewCounter(prometheus.CounterOpts{Name: m.name, Help: m.help, ConstLabels: label})
-			c.Add(v)
-			cl = append(cl, c)
-		} else if m.kind == cargoMetricGauge {
-			log.Infow("evaluatedGauge", "name", m.name, "label", label, "value", v, "tookSeconds", took)
-			c := prometheus.NewGauge(prometheus.GaugeOpts{Name: m.name, Help: m.help, ConstLabels: label})
-			c.Set(v)
-			cl = append(cl, c)
-		} else {
-			return nil, xerrors.Errorf("unknown metric kind '%s'", m.kind)
-		}
-	}
-
-	return cl, nil
 }

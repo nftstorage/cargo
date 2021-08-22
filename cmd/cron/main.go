@@ -179,6 +179,7 @@ func main() {
 			aggregateDags,
 			trackDeals,
 			exportStatus,
+			pushMetrics,
 			oldExportStatus,
 		},
 	}).RunContext(ctx, os.Args)
