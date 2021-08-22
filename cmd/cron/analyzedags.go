@@ -32,9 +32,9 @@ var analyzeDags = &cli.Command{
 	Name:  "analyze-dags",
 	Flags: []cli.Flag{
 		&cli.UintFlag{
-			Name:  "skip-dags-aged",
-			Usage: "If a dag is older than that many days - skip over it",
-			Value: 1,
+			Name:  "skip-dags-aged-hours",
+			Usage: "If a dag is not pinned and older than that many hours - do not wait for a pin in-process",
+			Value: 2,
 		},
 	},
 	Action: func(cctx *cli.Context) error {
@@ -83,7 +83,7 @@ var analyzeDags = &cli.Command{
 				) DESC,
 				entry_created DESC -- ensure newest arrivals are attempted first
 			`,
-			fmt.Sprintf("%d days", cctx.Uint("skip-dags-aged")),
+			fmt.Sprintf("%d hours", cctx.Uint("skip-dags-aged-hours")),
 		)
 		if err != nil {
 			return err
