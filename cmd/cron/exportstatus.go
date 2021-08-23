@@ -11,7 +11,7 @@ import (
 	"golang.org/x/xerrors"
 )
 
-const faunaBatchSize = 9_000
+const faunaBatchSize = 2048
 
 //
 // golang Graphql offerings are a trash-fire
@@ -170,7 +170,7 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 				"aCid": graphql.String(aCidStr),
 				"pCid": graphql.String(pCidStr),
 			}); err != nil && err.Error() != "Instance is not unique." {
-				return err
+				return xerrors.Errorf("createAggregate() %s failed: %w", aCidStr, err)
 			}
 			countAggregates++
 
@@ -214,7 +214,8 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 					"status":     DealStatus(dealStatus),
 					"statusLong": graphql.String(*dealStatusDesc),
 				}); err != nil {
-					return err
+					return xerrors.Errorf("createOrUpdateDeal() %d status %s for aggregate %s failed: %w", dealID, dealStatus, aCidStr, err)
+
 				}
 				countDeals++
 			}
@@ -253,36 +254,75 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 	return nil
 }
 
-func faunaUploadEntriesAndMarkUpdated(ctx context.Context, project faunaProject, gql *graphql.Client, updStartTime time.Time, aggCid string, entries []AggregateEntryInput) error {
+func faunaUploadEntriesAndMarkUpdated(
+	ctx context.Context,
+	project faunaProject,
+	gql *graphql.Client,
+	updStartTime time.Time,
+	aggCid string,
+	entries []AggregateEntryInput,
+) (err error) {
+	markCidDone := make([]string, 0, len(entries))
+	defer func() {
+		if len(markCidDone) > 0 {
+			_, markErr := db.Exec(
+				ctx,
+				`
+				UPDATE cargo.dag_sources ds
+					SET entry_last_exported = $1
+				FROM cargo.sources s
+				WHERE
+					s.project = $2
+						AND
+					ds.srcid = s.srcid
+						AND
+					ds.cid_v1 = ANY ( $3 )
+				`,
+				updStartTime,
+				project.id,
+				markCidDone,
+			)
+			if markErr != nil {
+				log.Errorf("unexpected error marking entries relating to %d CIDs as updated: %s", len(markCidDone), markErr)
+				if err == nil {
+					err = markErr
+				}
+			}
+		}
+	}()
 
-	markDone := make([]string, len(entries))
-	for i := range entries {
-		markDone[i] = entries[i].cidKey
-	}
-
-	if err := gql.Mutate(ctx, new(faunaMutateAddAggregateEntries), map[string]interface{}{
+	err = gql.Mutate(ctx, new(faunaMutateAddAggregateEntries), map[string]interface{}{
 		"aCid":       graphql.String(aggCid),
 		"aggEntries": entries,
-	}); err != nil {
-		return err
+	})
+	if err == nil {
+		for _, e := range entries {
+			markCidDone = append(markCidDone, e.cidKey)
+		}
+		return nil
+	} else if err.Error() == "Missing content CID" {
+		log.Warnf("addAggregateEntries() of %d entries to aggregate %s failed with some CIDs allegedly missing, retrying individually", len(entries), aggCid)
+
+		for i := range entries {
+			err = gql.Mutate(ctx, new(faunaMutateAddAggregateEntries), map[string]interface{}{
+				"aCid":       graphql.String(aggCid),
+				"aggEntries": entries[i : i+1],
+			})
+			if err == nil {
+				markCidDone = append(markCidDone, entries[i].cidKey)
+			} else {
+				log.Errorw("missing content CID", "aggregateCid", aggCid, "entries", entries[i:i+1])
+				return xerrors.Errorf("addAggregateEntries() of entry %s to aggregate %s failed: %w", entries[i].Cid, aggCid, err)
+			}
+		}
+
+		// how did we get here?!
+		log.Warnf("addAggregateEntries of %d entries to aggregate %s failed as a batch, but succeeded with each individually... sigh", len(entries), aggCid)
 	}
 
-	_, err := db.Exec(
-		ctx,
-		`
-		UPDATE cargo.dag_sources ds
-			SET entry_last_exported = $1
-		FROM cargo.sources s
-		WHERE
-			s.project = $2
-				AND
-			ds.srcid = s.srcid
-				AND
-			ds.cid_v1 = ANY ( $3 )
-		`,
-		updStartTime,
-		project.id,
-		markDone,
-	)
-	return err
+	if err != nil {
+		return xerrors.Errorf("addAggregateEntries() of %d entries to aggregate %s failed: %w", len(entries), aggCid, err)
+	}
+
+	return nil
 }
