@@ -49,7 +49,7 @@ type cfStatusUpdate struct {
 var oldKvLastPct = 101
 var oldKvCountPending, oldKvCountUpdated int
 var oldExportStatus = &cli.Command{
-	Usage: "Export status of individual DAGs to he legacy CF KV-store",
+	Usage: "Export status of individual DAGs to the legacy CF KV-store",
 	Name:  "old-export-status",
 	Flags: []cli.Flag{},
 	Action: func(cctx *cli.Context) error {
@@ -60,55 +60,38 @@ var oldExportStatus = &cli.Command{
 		defer func() { log.Infow("summary", "updated", oldKvCountUpdated) }()
 
 		t0 := time.Now()
-		err := db.QueryRow(
+		_, err := db.Exec(
 			ctx,
-			`
-			SELECT COUNT( DISTINCT ( ds.source_key ) )
-				FROM cargo.dag_sources ds
-				JOIN cargo.dags d USING ( cid_v1 )
-				JOIN cargo.sources s USING ( srcid )
-			WHERE
-				s.project = 2
-					AND
-				d.size_actual IS NOT NULL
-					AND
-				( ds.entry_last_exported IS NULL OR d.entry_last_updated > ds.entry_last_exported )
-			`,
+			`REFRESH MATERIALIZED VIEW cargo.legacy_nft_storage_export_rollup`,
+		)
+		if err != nil {
+			return err
+		}
+		err = db.QueryRow(
+			ctx,
+			`SELECT COUNT(*) FROM cargo.legacy_nft_storage_export_rollup`,
 		).Scan(&oldKvCountPending)
 		if err != nil {
 			return err
 		}
+
 		if oldKvCountPending == 0 {
 			return nil
 		}
-
-		log.Infof("updating status of approximately %d entries", oldKvCountPending)
+		log.Infof("updating status of %d entries", oldKvCountPending)
 
 		rows, err := db.Query(
 			ctx,
 			`
 			SELECT
-					ds.source_key,
-					ds.cid_v1,
-					(
-						CASE WHEN
-							d.size_actual IS NULL
-								OR
-							ds.entry_removed IS NOT NULL
-								OR
-							s.weight < 0
-								OR
-							EXISTS (
-								SELECT 42 FROM cargo.aggregate_entries ae, cargo.deals de
-								WHERE ds.cid_v1 = ae.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status IN ( 'active' )
-							)
-						THEN 0 ELSE 1 END
-					) AS queued,
-					( SELECT COUNT(de.deal_id) FROM cargo.aggregate_entries ae, cargo.deals de WHERE ds.cid_v1 = ae.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status = 'published' ) AS published,
-					( SELECT COUNT(de.deal_id) FROM cargo.aggregate_entries ae, cargo.deals de WHERE ds.cid_v1 = ae.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status = 'active' ) AS active,
-					( SELECT COUNT(de.deal_id) FROM cargo.aggregate_entries ae, cargo.deals de WHERE ds.cid_v1 = ae.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status = 'terminated' ) AS terminated,
+					ru.source_key,
+					ru.cid_v1,
+					ru.queued,
+					ru.published,
+					ru.active,
+					ru.terminated,
 					de.status,
-					COALESCE( de.entry_last_updated, d.entry_last_updated ),
+					COALESCE( de.entry_last_updated, ru.entry_last_updated ),
 					ae.aggregate_cid,
 					a.piece_cid,
 					de.provider,
@@ -116,24 +99,17 @@ var oldExportStatus = &cli.Command{
 					ae.datamodel_selector,
 					de.start_time,
 					de.end_time
-				FROM cargo.dag_sources ds
-				JOIN cargo.sources s USING ( srcid )
-				JOIN cargo.dags d USING ( cid_v1 )
+				FROM cargo.legacy_nft_storage_export_rollup ru
 				LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
 				LEFT JOIN cargo.aggregates a USING ( aggregate_cid )
 				LEFT JOIN cargo.deals de USING ( aggregate_cid )
-			WHERE
-				s.project = 2
-					AND
-				d.size_actual IS NOT NULL
-					AND
-				( ds.entry_last_exported IS NULL OR d.entry_last_updated > ds.entry_last_exported )
-			ORDER BY ds.source_key -- order is critical to form bulk-update batches
+			ORDER BY ru.source_key -- order is critical to form bulk-update batches
 			`,
 		)
 		if err != nil {
 			return err
 		}
+		defer rows.Close()
 
 		var priorKey string
 		updates := make(map[string]*cfStatusUpdate, 10000)
