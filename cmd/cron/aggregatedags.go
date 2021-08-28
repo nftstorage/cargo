@@ -287,7 +287,7 @@ var aggregateDags = &cli.Command{
 
 		//
 		// go through the proposed bundles in parallel, see what makes it
-		undersizedInvalidCars, err := reifyAggregateCars(cctx, stats, aggBundles)
+		undersizedInvalidCars, err := reifyAggregateCars(cctx, stats, false, aggBundles)
 		if err != nil {
 			return err
 		}
@@ -391,7 +391,7 @@ var aggregateDags = &cli.Command{
 					strings.Join(bundleShards, "  "),
 				)
 
-				newInvalidCars, err := reifyAggregateCars(cctx, stats, aggBundles)
+				newInvalidCars, err := reifyAggregateCars(cctx, stats, false, aggBundles)
 				if err != nil {
 					return err
 				}
@@ -499,7 +499,7 @@ var aggregateDags = &cli.Command{
 		}
 
 		// if it works - it works
-		_, err = reifyAggregateCars(cctx, stats, [][]dagaggregator.AggregateDagEntry{finalDitchAgg})
+		_, err = reifyAggregateCars(cctx, stats, true, [][]dagaggregator.AggregateDagEntry{finalDitchAgg})
 		return err
 	},
 }
@@ -592,7 +592,7 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 
 var reifyRoundsCount int
 
-func reifyAggregateCars(cctx *cli.Context, stats runningTotals, aggBundles [][]dagaggregator.AggregateDagEntry) ([]aggregateResult, error) {
+func reifyAggregateCars(cctx *cli.Context, stats runningTotals, timeboxingActive bool, aggBundles [][]dagaggregator.AggregateDagEntry) ([]aggregateResult, error) {
 
 	reifyRoundsCount++
 
@@ -636,7 +636,7 @@ func reifyAggregateCars(cctx *cli.Context, stats runningTotals, aggBundles [][]d
 					if !chanOpen {
 						return
 					}
-					res, err := aggregateAndAnalyze(cctx, carExportDir, toAgg)
+					res, err := aggregateAndAnalyze(cctx, carExportDir, toAgg, timeboxingActive)
 					if err != nil {
 						errCh <- err
 						ctxCloser()
@@ -672,7 +672,7 @@ func reifyAggregateCars(cctx *cli.Context, stats runningTotals, aggBundles [][]d
 	return undersized, nil
 }
 
-func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator.AggregateDagEntry) (*aggregateResult, error) {
+func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator.AggregateDagEntry, isTimeboxed bool) (*aggregateResult, error) {
 	ctx, ctxCloser := context.WithCancel(cctx.Context)
 	defer ctxCloser()
 
@@ -919,9 +919,17 @@ watchdog:
 	// whoa - everything worked!!!
 	log.Infof("%s: persisting records in database", aggLabel)
 
-	aggMeta, err := json.Marshal(dagaggregator.ManifestPreamble{
-		RecordType: dagaggregator.RecordType(aggregateType),
-		Version:    dagaggregator.CurrentManifestPreamble.Version,
+	type aggregateMetadata struct {
+		dagaggregator.ManifestPreamble
+		Timeboxed bool `json:",omitempty"`
+	}
+
+	aggMeta, err := json.Marshal(aggregateMetadata{
+		ManifestPreamble: dagaggregator.ManifestPreamble{
+			RecordType: dagaggregator.RecordType(aggregateType),
+			Version:    dagaggregator.CurrentManifestPreamble.Version,
+		},
+		Timeboxed: isTimeboxed,
 	})
 	if err != nil {
 		return nil, err

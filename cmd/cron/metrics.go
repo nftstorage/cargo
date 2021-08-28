@@ -365,6 +365,19 @@ var metricsList = []cargoMetric{
 	// deal-related metrics
 	{
 		kind: cargoMetricGauge,
+		name: "dagcargo_filecoin_aggregates_timebox_forced_last_24h",
+		help: "Count of aggregates created by repackaging already stored DAGs in oder to satisfy timing and size constraints",
+		query: `
+			SELECT COUNT(*)
+				FROM cargo.aggregates
+			WHERE
+				entry_created > NOW() - '24 hours'::INTERVAL
+					AND
+				(metadata->'Timeboxed')::BOOLEAN
+		`,
+	},
+	{
+		kind: cargoMetricGauge,
 		name: "dagcargo_filecoin_deals",
 		help: "Count of filecoin deals for aggregates packaged by the service",
 		query: `
