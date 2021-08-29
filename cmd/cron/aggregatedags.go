@@ -437,7 +437,7 @@ var aggregateDags = &cli.Command{
 					r.ref_v1 IS NULL
 						AND
 					-- don't go with big dags, don't risk it
-					d.size_actual IS NOT NULL AND d.size_actual < $1
+					d.size_actual > 0 AND d.size_actual < $1
 						AND
 					-- do not republish deleted/de-prioritized dags
 					EXISTS (
@@ -701,7 +701,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 				AND
 			r.ref_v1 = d.cid_v1
 				AND
-			d.size_actual IS NOT NULL
+			d.size_actual > 0
 		`,
 		initialRoots,
 	)
