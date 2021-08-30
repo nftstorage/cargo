@@ -4,7 +4,7 @@
 #  crontab - < maint/user_crontab
 #
 # Test for pending changes:
-#  diff -U0 <( crontab -l ) maint/user_crontab
+#  diff -U0 maint/user_crontab <( crontab -l )
 #
 GOLOG_LOG_FMT=json
 
@@ -21,7 +21,7 @@ GOLOG_LOG_FMT=json
 # Sadly things need a bounce once in a while, at least for now
 # Adding this as a workaround to get things unblocked super-short-term
 # ( the daemon is launched such that it autorestarts )
-23 */2 * * *    killall ipfs
+23 */4 * * *    killall ipfs
 
 # analysis with default 4 min expiration (start delayed by 5 seconds, allowing the one below to start 1st)
 */5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; sleep 5 && mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron --ipfs-api-max-workers 1024 analyze-dags >>"$LOGDIR/cron_analyze-dags.log.ndjson" 2>&1

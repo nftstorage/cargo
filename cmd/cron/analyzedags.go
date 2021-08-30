@@ -167,29 +167,26 @@ var analyzeDags = &cli.Command{
 		}
 
 		workerStates := make([]*atomic.Value, workerCount)
-		doneCh := make(chan struct{}, workerCount) // this effectively emulates a sync.WaitGroup
-		errCh := make(chan error, workerCount)
+		retCh := make(chan error, workerCount)
 		for i := 0; i < workerCount; i++ {
 			state := new(atomic.Value)
 			workerStates[i] = state
 
 			go func() {
-				defer func() {
-					state.Store("exitted")
-					doneCh <- struct{}{}
+				state.Store("idle")
+				defer state.Store("exitted")
+				retCh <- func() error {
+					for {
+						c, chanOpen := <-toAnalyzeCh
+						if !chanOpen {
+							return nil
+						}
+						err := pinAndAnalyze(cctx, c, total, state)
+						if err != nil {
+							return err
+						}
+					}
 				}()
-
-				for {
-					c, chanOpen := <-toAnalyzeCh
-					if !chanOpen {
-						return
-					}
-					err := pinAndAnalyze(cctx, c, total, state)
-					if err != nil {
-						errCh <- err
-						return
-					}
-				}
 			}()
 		}
 
@@ -205,8 +202,8 @@ var analyzeDags = &cli.Command{
 			defer t.Stop()
 		}
 
+		// wg.Wait() + abort on error
 		var workerError error
-
 	watchdog:
 		for {
 			select {
@@ -226,36 +223,25 @@ var analyzeDags = &cli.Command{
 					}
 				}
 
-			case <-doneCh:
+			case err := <-retCh:
+				if err != nil {
+					ctxCloser()
+					if workerError == nil {
+						workerError = err
+					}
+				}
 				workerCount--
 				if workerCount == 0 {
 					break watchdog
 				}
-
-			case <-cctx.Context.Done():
-				break watchdog
-
-			case workerError = <-errCh:
-				ctxCloser()
-				break watchdog
 			}
 		}
-
-		// wg.Wait()
-		for workerCount > 0 {
-			<-doneCh
-			workerCount--
-		}
-		close(errCh) // no writers remain
 		if showProgress {
 			defer fmt.Fprint(os.Stderr, "100%\n")
 		}
 
 		if workerError != nil {
 			return workerError
-		}
-		if err := <-errCh; err != nil {
-			return err
 		}
 		return cctx.Context.Err()
 	},
@@ -274,40 +260,20 @@ var ipfsShutdownErrorRegex = regexp.MustCompile(`promise channel was closed$`)
 
 func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState *atomic.Value) (err error) {
 
+	ctx, ctxCloser := context.WithCancel(cctx.Context)
+	defer ctxCloser()
+
 	api := ipfsAPI(cctx)
 
-	// open a tx only when/if we need one, do not hold up pg connections
-	var tx pgx.Tx
-
 	defer func() {
-
 		if err != nil {
 			atomic.AddUint64(total.failed, 1)
-			// Timeouts during analysis are non-fatal, but still logged as an error
-			if ue, castOk := err.(*url.Error); castOk && ue.Timeout() {
-				log.Errorf("aborting '%s' of '%s' due to timeout: %s", ue.Op, ue.URL, ue.Unwrap().Error())
-				err = nil
-			}
 		}
-
-		// pull in a possible cancel if any
-		if err == nil {
-			err = cctx.Context.Err()
-		}
-
-		if err != nil {
-			if tx != nil {
-				tx.Rollback(context.Background()) //nolint:errcheck
-			}
-		} else if tx != nil {
-			err = tx.Commit(cctx.Context)
-		}
-
 		currentState.Store("idle")
 	}()
 
 	currentState.Store("API /pin/add " + rootCid.String())
-	if err = api.Request("pin/add").Arguments(rootCid.String()).Exec(cctx.Context, nil); err != nil {
+	if err = api.Request("pin/add").Arguments(rootCid.String()).Exec(ctx, nil); err != nil {
 		// If we fail to even pin: move on without an error ( we didn't write anything to the DB yet )
 		atomic.AddUint64(total.failed, 1)
 		msg := fmt.Sprintf("failure to pin %s: %s", rootCid, err)
@@ -325,57 +291,121 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 
 	// We got that far: means we have the pin
 	// Allow for obscenely long stat/refs times
-	api.SetTimeout(time.Second * time.Duration(cctx.Uint("ipfs-api-timeout")) * 15)
+	/*
+		( this is not even hypothetical, timing below with *hot* caches 😿 )
 
-	currentState.Store("API /dag/stat " + rootCid.String())
+		~$ time ipfs dag stat --progress=false bafybeiaysi4s6lnjev27ln5icwm6tueaw2vdykrtjkwiphwekaywqhcjze
+			Size: 351956725764, NumBlocks: 20684378
+
+			real    108m13.260s
+			user    0m18.150s
+			sys     0m0.434s
+
+	*/
+	api.SetTimeout(3 * time.Hour)
+
+	workerCount := 2
+	retCh := make(chan error, workerCount) // this effectively doubles as a sync.WaitGroup
+
 	ds := new(dagStat)
-	err = api.Request("dag/stat").Arguments(rootCid.String()).Option("progress", "false").Exec(cctx.Context, ds)
-	if err != nil {
-		return err
-	}
+	refs := make([][]interface{}, 0, 1024) // interface{} as these go directly into pgx.CopyFrom
 
-	if ds.NumBlocks > 1 {
+	currentState.Store("API (/dag/stat + /refs) " + rootCid.String())
+	go func() {
+		retCh <- api.Request("dag/stat").Arguments(rootCid.String()).Option("progress", "false").Exec(ctx, ds)
+	}()
+	go func() {
+		retCh <- func() error {
 
-		currentState.Store("API /refs " + rootCid.String())
-		resp, err := api.Request("refs").Arguments(rootCid.String()).Option("unique", "true").Option("recursive", "true").Send(cctx.Context)
-		if err != nil {
-			return err
-		}
-
-		dec := json.NewDecoder(resp.Output)
-		refs := make([][]interface{}, 0, 256)
-		for {
-			ref := new(refEntry)
-			if decErr := dec.Decode(&ref); decErr != nil {
-				if decErr == io.EOF {
-					break
-				}
-				err = decErr
-				return err
-			}
-			if ref.Err != "" {
-				err = xerrors.New(ref.Err)
-				return err
-			}
-
-			var refCid cid.Cid
-			refCid, err = cid.Parse(ref.Ref)
+			resp, err := api.Request("refs").Arguments(rootCid.String()).Option("unique", "true").Option("recursive", "true").Send(ctx)
 			if err != nil {
 				return err
 			}
 
-			refs = append(refs, []interface{}{
-				cidv1(rootCid).String(),
-				cidv1(refCid).String(),
-			})
-		}
+			dec := json.NewDecoder(resp.Output)
+			for {
 
-		currentState.Store("DbWrite refs " + rootCid.String())
-		tx, err = db.Begin(cctx.Context)
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+					// go on
+				}
+
+				ref := new(refEntry)
+				if decErr := dec.Decode(&ref); decErr != nil {
+					if decErr == io.EOF {
+						return nil
+					}
+					err = decErr
+					return err
+				}
+				if ref.Err != "" {
+					err = xerrors.New(ref.Err)
+					return err
+				}
+
+				var refCid cid.Cid
+				refCid, err = cid.Parse(ref.Ref)
+				if err != nil {
+					return err
+				}
+
+				refs = append(refs, []interface{}{
+					cidv1(rootCid).String(),
+					cidv1(refCid).String(),
+				})
+			}
+
+		}()
+	}()
+
+	// wg.Wait() + abort on error
+	var workerError error
+	for {
+		err := <-retCh
+
 		if err != nil {
-			return err
+			ctxCloser()
+			if workerError == nil {
+				workerError = err
+			}
 		}
 
+		workerCount--
+		if workerCount == 0 {
+			break
+		}
+	}
+	if workerError != nil {
+		return workerError
+	}
+
+	currentState.Store("DbWrite size+refs " + rootCid.String())
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// pull in a possible cancel if any
+		if err == nil {
+			err = ctx.Err()
+		}
+
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+
+		if err != nil {
+			tx.Rollback(context.Background()) //nolint:errcheck
+		} else {
+			atomic.AddUint64(total.analyzed, 1)
+			atomic.AddUint64(total.refs, uint64(len(refs)))
+			atomic.AddUint64(total.size, ds.Size)
+		}
+	}()
+
+	if len(refs) > 0 {
 		_, err = tx.CopyFrom(
 			cctx.Context,
 			pgx.Identifier{"cargo", "refs"},
@@ -385,24 +415,13 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 		if err != nil {
 			return err
 		}
-
-		atomic.AddUint64(total.refs, uint64(len(refs)))
 	}
 
-	updSQL := `UPDATE cargo.dags SET size_actual = $1 WHERE cid_v1 = $2`
-	updArgs := []interface{}{ds.Size, cidv1(rootCid).String()}
-
-	currentState.Store("DbWrite size_actual " + rootCid.String())
-	if tx != nil {
-		_, err = tx.Exec(cctx.Context, updSQL, updArgs...)
-	} else {
-		_, err = db.Exec(cctx.Context, updSQL, updArgs...)
-	}
-	if err != nil {
-		return err
-	}
-
-	atomic.AddUint64(total.analyzed, 1)
-	atomic.AddUint64(total.size, ds.Size)
-	return nil
+	_, err = tx.Exec(
+		ctx,
+		`UPDATE cargo.dags SET size_actual = $1 WHERE cid_v1 = $2`,
+		ds.Size,
+		cidv1(rootCid).String(),
+	)
+	return err
 }
