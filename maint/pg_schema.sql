@@ -410,50 +410,6 @@ CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
   ORDER BY s.project, u.srcid, u.entry_created DESC
 );
 
--- per project, how many items that arrived in the past 25~1-hours-ago
--- are currently "missing" ( either not pinnable OR not analyzable due to stuck IPFS )
-CREATE OR REPLACE VIEW cargo.dags_missing_summary_window_day AS (
-  WITH proj_summary AS (
-    SELECT s.project, COUNT(*) AS window_cnt
-      FROM cargo.dag_sources ds
-      JOIN cargo.dags d USING ( cid_v1 )
-      JOIN cargo.sources s USING ( srcid )
-    WHERE
-      d.size_actual IS NULL
-        AND
-      ds.entry_removed IS NULL
-        AND
-      ds.entry_created BETWEEN NOW()-'25 hours'::INTERVAL AND NOW()-'1 hours'::INTERVAL
-        AND
-      (
-        (
-          ds.details->>'_lagging_pin_redirect_from_user' IS NULL
-            AND
-          ( s.weight IS NULL OR ( s.weight >= 0 AND s.weight != 42 ) )
-        )
-          OR
-        (
-          ds.details->>'_lagging_pin_redirect_from_user' IS NOT NULL
-            AND
-          EXISTS (
-            SELECT 42
-              FROM cargo.sources ss
-            WHERE
-              ss.project = s.project
-                AND
-              ss.source = ds.details->>'_lagging_pin_redirect_from_user'
-                AND
-              ( ss.weight IS NULL OR ( ss.weight >= 0 AND ss.weight != 42 ) )
-          )
-        )
-      )
-    GROUP BY s.project
-  )
-  SELECT DISTINCT s.project, COALESCE( proj_summary.window_cnt, 0 ) AS missing_count
-    FROM cargo.sources s
-    LEFT JOIN proj_summary USING( project )
-);
-
 CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
   WITH
   incomplete_sources AS (

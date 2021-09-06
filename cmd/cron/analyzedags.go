@@ -21,10 +21,10 @@ import (
 )
 
 type stats struct {
-	analyzed *uint64
-	failed   *uint64
-	refs     *uint64
-	size     *uint64
+	analyzed  *uint64
+	failed    *uint64
+	refBlocks *uint64
+	size      *uint64
 }
 
 var analyzeDags = &cli.Command{
@@ -129,10 +129,10 @@ var analyzeDags = &cli.Command{
 		}
 
 		total := stats{
-			analyzed: new(uint64),
-			failed:   new(uint64),
-			refs:     new(uint64),
-			size:     new(uint64),
+			analyzed:  new(uint64),
+			failed:    new(uint64),
+			refBlocks: new(uint64),
+			size:      new(uint64),
 		}
 
 		defer func() {
@@ -141,7 +141,7 @@ var analyzeDags = &cli.Command{
 				"prepinnedBySweeper", alreadyKnownCount,
 				"analyzed", atomic.LoadUint64(total.analyzed),
 				"failed", atomic.LoadUint64(total.failed),
-				"referencedBlocks", atomic.LoadUint64(total.refs),
+				"referencedBlocks", atomic.LoadUint64(total.refBlocks),
 				"bytes", atomic.LoadUint64(total.size),
 			)
 		}()
@@ -400,7 +400,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 			tx.Rollback(context.Background()) //nolint:errcheck
 		} else {
 			atomic.AddUint64(total.analyzed, 1)
-			atomic.AddUint64(total.refs, uint64(len(refs)))
+			atomic.AddUint64(total.refBlocks, uint64(len(refs)))
 			atomic.AddUint64(total.size, ds.Size)
 		}
 	}()

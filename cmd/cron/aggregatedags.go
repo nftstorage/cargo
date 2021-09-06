@@ -738,8 +738,14 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	)
 
 	//
+	var countBlocks, countBytes int64
 	akc, _ := ramBs.AllKeysChan(ctx)
-	log.Infof("%s: writing out %d intermediate blocks to ipfs daemon", aggLabel, len(akc))
+	for c := range akc {
+		b, _ := ramBs.Get(c)
+		countBlocks++
+		countBytes += int64(len(b.RawData()))
+	}
+	log.Infof("%s: writing out %s intermediate blocks weighing %s bytes to ipfs daemon", aggLabel, humanize.Comma(countBlocks), humanize.Comma(countBytes))
 	if err = writeoutBlocks(cctx, ramBs); err != nil {
 		return nil, err
 	}
