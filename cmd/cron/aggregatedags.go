@@ -429,12 +429,12 @@ var aggregateDags = &cli.Command{
 					JOIN cargo.dags d
 						ON ae.cid_v1 = d.cid_v1
 					LEFT JOIN cargo.refs r
-						ON ae.cid_v1 = r.ref_v1
+						ON ae.cid_v1 = r.ref_cid
 					LEFT JOIN cargo.deals de -- this inflates the replica_count, conflating 0 with 1 ( always 1 ), which is ok
 						ON de.aggregate_cid = ae.aggregate_cid AND de.status != 'terminated'
 				WHERE
 					-- not part of anything else
-					r.ref_v1 IS NULL
+					r.ref_cid IS NULL
 						AND
 					-- don't go with big dags, don't risk it
 					d.size_actual > 0 AND d.size_actual < $1
@@ -557,7 +557,7 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 					JOIN active_sources asrc USING ( srcid )
 					LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
 				WHERE
-					r.ref_v1 = d.cid_v1
+					r.ref_cid = d.cid_v1
 						AND
 					rds.entry_removed IS NULL
 						AND
@@ -574,9 +574,9 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 					SELECT 42
 						FROM cargo.refs sr
 						JOIN cargo.dags sd
-							ON sr.ref_v1 = sd.cid_v1
+							ON sr.ref_cid = sd.cid_v1
 						JOIN cargo.dag_sources sds
-							ON sr.ref_v1 = sds.cid_v1 AND ds.srcid = sds.srcid
+							ON sr.ref_cid = sds.cid_v1 AND ds.srcid = sds.srcid
 					WHERE
 						ds.cid_v1 = sr.cid_v1
 							AND
@@ -699,7 +699,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 		WHERE
 			r.cid_v1 = ANY( $1::TEXT[] )
 				AND
-			r.ref_v1 = d.cid_v1
+			r.ref_cid = d.cid_v1
 				AND
 			d.size_actual > 0
 		`,

@@ -14,7 +14,7 @@ use SQL::Translator;
   __PACKAGE__->loader_options (
     naming => 'v8',
     db_schema => 'cargo',
-    exclude => qr/^debug/,
+    exclude => qr/^(?: debug | legacy_nft_storage_export_rollup )/x,
   );
 }
 
