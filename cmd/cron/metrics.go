@@ -236,7 +236,7 @@ var metricsList = []cargoMetric{
 							SELECT 42
 								FROM cargo.refs r
 								JOIN cargo.dag_sources rds
-									ON r.cid_v1 = rds.cid_v1 AND r.ref_v1 = d.cid_v1 AND rds.entry_removed IS NULL
+									ON r.cid_v1 = rds.cid_v1 AND r.ref_cid = d.cid_v1 AND rds.entry_removed IS NULL
 								JOIN cargo.sources rs
 									ON rds.srcid = rs.srcid AND ( rs.weight >= 0 OR rs.weight IS NULL )
 						)
@@ -296,7 +296,7 @@ var metricsList = []cargoMetric{
 							SELECT 42
 								FROM cargo.refs r
 								JOIN cargo.dag_sources rds
-									ON r.cid_v1 = rds.cid_v1 AND r.ref_v1 = d.cid_v1 AND rds.entry_removed IS NULL
+									ON r.cid_v1 = rds.cid_v1 AND r.ref_cid = d.cid_v1 AND rds.entry_removed IS NULL
 								JOIN cargo.sources rs
 									ON rds.srcid = rs.srcid AND ( rs.weight >= 0 OR rs.weight IS NULL )
 						)
@@ -329,11 +329,11 @@ var metricsList = []cargoMetric{
 			SELECT SUM( size_actual )
 				FROM cargo.dags d
 				LEFT JOIN cargo.refs r
-					ON d.cid_v1 = r.ref_v1
+					ON d.cid_v1 = r.ref_cid
 			WHERE
 				d.size_actual IS NOT NULL
 					AND
-				r.ref_v1 IS NULL
+				r.ref_cid IS NULL
 		`,
 	},
 	{
@@ -344,7 +344,7 @@ var metricsList = []cargoMetric{
 			SELECT
 				(
 					SELECT COUNT(*) FROM (
-						SELECT DISTINCT( ref_v1 ) FROM cargo.refs
+						SELECT DISTINCT( ref_cid ) FROM cargo.refs
 					) d
 				)
 					+
@@ -352,11 +352,11 @@ var metricsList = []cargoMetric{
 					SELECT COUNT(*)
 						FROM cargo.dags d
 						LEFT JOIN cargo.refs r
-							ON d.cid_v1 = r.ref_v1
+							ON d.cid_v1 = r.ref_cid
 					WHERE
 						d.size_actual IS NOT NULL
 							AND
-						r.ref_v1 IS NULL
+						r.ref_cid IS NULL
 				)
 		`,
 	},

@@ -86,10 +86,10 @@ CREATE TRIGGER trigger_dag_updated
 
 CREATE TABLE IF NOT EXISTS cargo.refs (
   cid_v1 TEXT NOT NULL REFERENCES cargo.dags ( cid_v1 ),
-  ref_v1 TEXT NOT NULL CONSTRAINT valid_cidv1 CHECK ( cargo.valid_cid_v1(ref_v1) ),
-  CONSTRAINT singleton_refs_record UNIQUE ( cid_v1, ref_v1 )
+  ref_cid TEXT NOT NULL CONSTRAINT valid_ref_cid CHECK ( cargo.valid_cid_v1(ref_cid) OR SUBSTRING( ref_cid FROM 1 FOR 2 ) = 'Qm' ),
+  CONSTRAINT singleton_refs_record UNIQUE ( cid_v1, ref_cid )
 );
-CREATE INDEX IF NOT EXISTS refs_ref_v1 ON cargo.refs ( ref_v1 );
+CREATE INDEX IF NOT EXISTS refs_ref_cid ON cargo.refs ( ref_cid );
 
 
 CREATE TABLE IF NOT EXISTS cargo.sources (
@@ -459,7 +459,7 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
         -- exclude anything that is a member of something else from the same srcid
         NOT EXISTS (
           SELECT 42 FROM cargo.refs r, cargo.dag_sources rds
-          WHERE r.ref_v1 = ds.cid_v1 AND r.cid_v1 = rds.cid_v1 AND rds.srcid = ds.srcid
+          WHERE r.ref_cid = ds.cid_v1 AND r.cid_v1 = rds.cid_v1 AND rds.srcid = ds.srcid
         )
       GROUP BY srcid
     ),
@@ -487,7 +487,7 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
             JOIN cargo.dag_sources rds USING ( cid_v1 )
             LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
           WHERE
-            r.ref_v1 = d.cid_v1
+            r.ref_cid = d.cid_v1
               AND
             rds.srcid = ds.srcid
               AND
@@ -546,7 +546,7 @@ AS $$
         JOIN cargo.dag_sources rds USING ( cid_v1 )
         LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
       WHERE
-        r.ref_v1 = ds.cid_v1
+        r.ref_cid = ds.cid_v1
           AND
         rds.entry_removed IS NULL
           AND

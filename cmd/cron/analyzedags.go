@@ -353,7 +353,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 
 				refs = append(refs, []interface{}{
 					cidv1(rootCid).String(),
-					cidv1(refCid).String(),
+					refCid.String(),
 				})
 			}
 
@@ -409,7 +409,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 		_, err = tx.CopyFrom(
 			cctx.Context,
 			pgx.Identifier{"cargo", "refs"},
-			[]string{"cid_v1", "ref_v1"},
+			[]string{"cid_v1", "ref_cid"},
 			pgx.CopyFromRows(refs),
 		)
 		if err != nil {
