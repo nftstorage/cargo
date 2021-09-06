@@ -679,10 +679,10 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	res := &aggregateResult{
 		standaloneEntries: make([]dagaggregator.AggregateDagEntry, len(toAgg)),
 	}
-	var projectedSize uint64
+	var projectedSize int64
 	initialRoots := make([]string, len(toAgg))
 	for i := range toAgg {
-		projectedSize += toAgg[i].UniqueBlockCumulativeSize
+		projectedSize += int64(toAgg[i].UniqueBlockCumulativeSize)
 		res.standaloneEntries[i] = toAgg[i]
 		initialRoots[i] = toAgg[i].RootCid.String()
 	}
@@ -751,9 +751,10 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	}
 
 	//
+	projectedSize += countBytes
 	log.Infof("%s: pinning, writing out projected %s bytes as car export, calculating commP and sha256",
 		aggLabel,
-		humanize.Comma(int64(projectedSize)),
+		humanize.Comma(projectedSize),
 	)
 
 	carTmpFile, realFile, err := tmpfile.TempFile(outDir)

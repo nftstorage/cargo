@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/ipfs/go-cid"
 	ipfsapi "github.com/ipfs/go-ipfs-api"
 	"github.com/jackc/pgx/v4"
@@ -219,7 +220,10 @@ var analyzeDags = &cli.Command{
 				for i := 0; i < len(workerStates); i++ {
 					s := workerStates[i].Load().(string)
 					if s != "exitted" {
-						log.Infof("Worker #%d: %s", i, s)
+						log.Infof("Worker % 5s: %s",
+							fmt.Sprintf("#%d", i),
+							s,
+						)
 					}
 				}
 
@@ -355,6 +359,10 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 					cidv1(rootCid).String(),
 					refCid.String(),
 				})
+
+				if (len(refs) % 1024) == 0 {
+					currentState.Store(fmt.Sprintf("API (/dag/stat + /refs) %s (%d unique refs processed)", rootCid.String(), len(refs)))
+				}
 			}
 
 		}()
@@ -381,7 +389,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 		return workerError
 	}
 
-	currentState.Store("DbWrite size+refs " + rootCid.String())
+	currentState.Store(fmt.Sprintf("DbWrite size(%s) + refs(%s) %s", humanize.Comma(int64(ds.Size)), humanize.Comma(int64(len(refs))), rootCid.String()))
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return err
