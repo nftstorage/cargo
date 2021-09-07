@@ -406,6 +406,12 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 	}()
 
 	if len(refs) > 0 {
+		// raise default timeout for the transaction scope: the reflist could be *massive*
+		_, err = tx.Exec(cctx.Context, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (2*time.Hour).Milliseconds()))
+		if err != nil {
+			return err
+		}
+
 		_, err = tx.CopyFrom(
 			cctx.Context,
 			pgx.Identifier{"cargo", "refs"},
