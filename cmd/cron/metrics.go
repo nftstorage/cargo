@@ -189,6 +189,70 @@ var metricsList = []cargoMetric{
 	},
 	{
 		kind: cargoMetricGauge,
+		name: "dagcargo_project_stored_items_oversized",
+		help: "Count of items larger than a 32GiB sector",
+		query: fmt.Sprintf(
+			`
+			WITH
+				active_sources AS (
+					SELECT * FROM cargo.sources WHERE weight >= 0 OR weight IS NULL
+				),
+				q AS (
+					SELECT s.project, COUNT(*) val
+						FROM active_sources s
+						JOIN cargo.dag_sources ds USING ( srcid )
+						JOIN cargo.dags d USING ( cid_v1 )
+					WHERE
+						d.size_actual > %d
+							AND
+						ds.entry_removed IS NULL
+					GROUP BY s.project
+				)
+			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
+				LEFT JOIN q USING ( project )
+			`,
+			targetMaxSize,
+		),
+	},
+	{
+		kind: cargoMetricGauge,
+		name: "dagcargo_project_stored_items_inactive",
+		help: "Count of items exclusively from inactive sources",
+		query: `
+			WITH
+				inactive_sources AS (
+					SELECT * FROM cargo.sources WHERE weight < 0 AND source != 'INTERNAL SYSTEM USER'
+				),
+				q AS (
+					SELECT s.project, COUNT(*) val
+						FROM inactive_sources s
+						JOIN cargo.dag_sources ds USING ( srcid )
+						JOIN cargo.dags d USING ( cid_v1 )
+					WHERE
+						d.size_actual IS NOT NULL
+							AND
+						ds.entry_removed IS NULL
+							AND
+						-- ensure an active source doesn't pin the same dag
+						NOT EXISTS (
+							SELECT 42
+								FROM cargo.dag_sources actds
+								JOIN cargo.sources acts USING ( srcid )
+							WHERE
+								actds.cid_v1 = ds.cid_v1
+									AND
+								( acts.weight >= 0 OR acts.weight IS NULL )
+						)
+					GROUP BY s.project
+				)
+			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
+				LEFT JOIN q USING ( project )
+			`,
+	},
+	{
+		kind: cargoMetricGauge,
 		name: "dagcargo_project_stored_bytes_active",
 		help: "Amount of known per-DAG-deduplicated bytes stored per project",
 		query: `
@@ -308,6 +372,84 @@ var metricsList = []cargoMetric{
 		`,
 	},
 
+	{
+		kind: cargoMetricGauge,
+		name: "dagcargo_project_stored_bytes_oversized_deduplicated",
+		help: "Amount of bytes in dags larger than a 32GiB sector",
+		query: fmt.Sprintf(
+			`
+			WITH
+				active_sources AS (
+					SELECT * FROM cargo.sources WHERE weight >= 0 OR weight IS NULL
+				),
+				q AS (
+					SELECT s.project, SUM(d.size_actual) val
+						FROM active_sources s
+						JOIN cargo.dag_sources ds USING ( srcid )
+						JOIN cargo.dags d USING ( cid_v1 )
+					WHERE
+						d.size_actual > %d
+							AND
+						ds.entry_removed IS NULL
+							AND
+						-- ensure we are not a part of something else active
+						NOT EXISTS (
+							SELECT 42
+								FROM cargo.refs r
+								JOIN cargo.dag_sources rds
+									ON r.cid_v1 = rds.cid_v1 AND r.ref_cid = d.cid_v1 AND rds.entry_removed IS NULL
+								JOIN cargo.sources rs
+									ON rds.srcid = rs.srcid AND ( rs.weight >= 0 OR rs.weight IS NULL )
+						)
+					GROUP BY s.project
+				)
+			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
+				LEFT JOIN q USING ( project )
+			`,
+			targetMaxSize,
+		),
+	},
+	{
+		kind: cargoMetricGauge,
+		name: "dagcargo_project_stored_bytes_inactive_deduplicated",
+		help: "Amount of bytes in dags exclusively from inactive sources",
+		query: `
+			WITH
+				inactive_sources AS (
+					SELECT * FROM cargo.sources WHERE weight < 0 AND source != 'INTERNAL SYSTEM USER'
+				),
+				q AS (
+					SELECT s.project, SUM(d.size_actual) val
+						FROM inactive_sources s
+						JOIN cargo.dag_sources ds USING ( srcid )
+						JOIN cargo.dags d USING ( cid_v1 )
+					WHERE
+						d.size_actual IS NOT NULL
+							AND
+						ds.entry_removed IS NULL
+							AND
+						-- ensure an active source doesn't pin the same dag
+						NOT EXISTS (
+							SELECT 42
+								FROM cargo.dag_sources actds
+								JOIN cargo.sources acts USING ( srcid )
+							WHERE
+								actds.cid_v1 = ds.cid_v1
+									AND
+								( acts.weight >= 0 OR acts.weight IS NULL )
+						)
+							AND
+						-- ensure we are not a part of something else
+						NOT EXISTS ( SELECT 42 FROM cargo.refs r WHERE r.ref_cid = d.cid_v1 )
+					GROUP BY s.project
+				)
+			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
+				LEFT JOIN q USING ( project )
+			`,
+	},
+
 	//
 	// DAG-related counts
 	{
@@ -364,15 +506,22 @@ var metricsList = []cargoMetric{
 	//
 	// deal-related metrics
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_filecoin_aggregates_timebox_forced_last_24h",
+		kind: cargoMetricCounter,
+		name: "dagcargo_filecoin_aggregates",
+		help: "Count of aggregates created",
+		query: `
+			SELECT COUNT(*)
+				FROM cargo.aggregates
+		`,
+	},
+	{
+		kind: cargoMetricCounter,
+		name: "dagcargo_filecoin_aggregates_timebox_forced",
 		help: "Count of aggregates created by repackaging already stored DAGs in oder to satisfy timing and size constraints",
 		query: `
 			SELECT COUNT(*)
 				FROM cargo.aggregates
 			WHERE
-				entry_created > NOW() - '24 hours'::INTERVAL
-					AND
 				(metadata->'Timeboxed')::BOOLEAN
 		`,
 	},
@@ -422,7 +571,7 @@ var metricsList = []cargoMetric{
 	{
 		kind: cargoMetricGauge,
 		name: "dagcargo_project_items_undealt_aggregates",
-		help: "Count of aggregated items awaiting their first deal per project",
+		help: "Count of aggregated items awaiting their first active deal per project",
 		query: `
 			WITH
 				active_sources AS (
