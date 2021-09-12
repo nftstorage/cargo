@@ -23,6 +23,7 @@ import (
 
 type stats struct {
 	analyzed  *uint64
+	unpinned  *uint64
 	failed    *uint64
 	refBlocks *uint64
 	size      *uint64
@@ -36,6 +37,14 @@ var analyzeDags = &cli.Command{
 			Name:  "skip-dags-aged-hours",
 			Usage: "If a dag is not pinned and older than that many hours - do not wait for a pin in-process",
 			Value: 2,
+		},
+		&cli.BoolFlag{
+			Name:  "prepinned-only",
+			Usage: "Rely on the out-of-band sweepers to pin all content, focusing on analyzis only",
+		},
+		&cli.BoolFlag{
+			Name:  "unpin-after-analysis",
+			Usage: "Remove ipfs daemon pin after successfully persisting dag stats",
 		},
 	},
 	Action: func(cctx *cli.Context) error {
@@ -118,7 +127,7 @@ var analyzeDags = &cli.Command{
 			} else if dagTooOld {
 				// sorry, old yeller
 				continue
-			} else if srcIsActive {
+			} else if srcIsActive && !cctx.Bool("prepinned-only") {
 				// we are instructed to try to download it right away
 				// goes to the queue right after the "already present"
 				dagsToDownloadAndProcess = append(dagsToDownloadAndProcess, c)
@@ -131,6 +140,7 @@ var analyzeDags = &cli.Command{
 
 		total := stats{
 			analyzed:  new(uint64),
+			unpinned:  new(uint64),
 			failed:    new(uint64),
 			refBlocks: new(uint64),
 			size:      new(uint64),
@@ -141,6 +151,7 @@ var analyzeDags = &cli.Command{
 				"totalSystemPins", len(systemPins),
 				"prepinnedBySweeper", alreadyKnownCount,
 				"analyzed", atomic.LoadUint64(total.analyzed),
+				"unpinned", atomic.LoadUint64(total.unpinned),
 				"failed", atomic.LoadUint64(total.failed),
 				"referencedBlocks", atomic.LoadUint64(total.refBlocks),
 				"bytes", atomic.LoadUint64(total.size),
@@ -276,21 +287,23 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 		currentState.Store("idle")
 	}()
 
-	currentState.Store("API /pin/add " + rootCid.String())
-	if err = api.Request("pin/add").Arguments(rootCid.String()).Exec(ctx, nil); err != nil {
-		// If we fail to even pin: move on without an error ( we didn't write anything to the DB yet )
-		atomic.AddUint64(total.failed, 1)
-		msg := fmt.Sprintf("failure to pin %s: %s", rootCid, err)
+	if !cctx.Bool("prepinned-only") {
+		currentState.Store("API /pin/add " + rootCid.String())
+		if err = api.Request("pin/add").Arguments(rootCid.String()).Exec(ctx, nil); err != nil {
+			// If we fail to even pin: move on without an error ( we didn't write anything to the DB yet )
+			atomic.AddUint64(total.failed, 1)
+			msg := fmt.Sprintf("failure to pin %s: %s", rootCid, err)
 
-		if ipfsShutdownErrorRegex.MatchString(msg) {
-			log.Debug(msg)
-		} else if ue, castOk := err.(*url.Error); castOk && ue.Timeout() {
-			log.Debug(msg)
-		} else {
-			log.Error(msg)
+			if ipfsShutdownErrorRegex.MatchString(msg) {
+				log.Debug(msg)
+			} else if ue, castOk := err.(*url.Error); castOk && ue.Timeout() {
+				log.Debug(msg)
+			} else {
+				log.Error(msg)
+			}
+
+			return nil
 		}
-
-		return nil
 	}
 
 	// We got that far: means we have the pin
@@ -316,12 +329,12 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 
 	currentState.Store("API (/dag/stat + /refs) " + rootCid.String())
 	go func() {
-		retCh <- api.Request("dag/stat").Arguments(rootCid.String()).Option("progress", "false").Exec(ctx, ds)
+		retCh <- api.Request("dag/stat").Arguments(rootCid.String()).Option("progress", "false").Option("offline", true).Exec(ctx, ds)
 	}()
 	go func() {
 		retCh <- func() error {
 
-			resp, err := api.Request("refs").Arguments(rootCid.String()).Option("unique", "true").Option("recursive", "true").Send(ctx)
+			resp, err := api.Request("refs").Arguments(rootCid.String()).Option("unique", "true").Option("recursive", "true").Option("offline", true).Send(ctx)
 			if err != nil {
 				return err
 			}
@@ -405,8 +418,20 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 		}
 
 		if err != nil {
+
 			tx.Rollback(context.Background()) //nolint:errcheck
+
 		} else {
+
+			if cctx.Bool("unpin-after-analysis") {
+				unpinErr := api.Request("pin/rm").Arguments(rootCid.String()).Exec(context.Background(), nil)
+				if unpinErr != nil {
+					log.Warnf("unpinning of %s after successful analysis failed: %s", rootCid.String(), unpinErr)
+				} else {
+					atomic.AddUint64(total.unpinned, 1)
+				}
+			}
+
 			atomic.AddUint64(total.analyzed, 1)
 			atomic.AddUint64(total.refBlocks, uint64(len(refs)))
 			atomic.AddUint64(total.size, ds.Size)

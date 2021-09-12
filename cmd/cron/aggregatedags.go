@@ -132,6 +132,14 @@ var aggregateDags = &cli.Command{
 			Destination: &forceAgeHours,
 		},
 		&cli.BoolFlag{
+			Name:  "skip-pinning",
+			Usage: "do not pin resulting aggregates - rely on out-of-band advertisers",
+		},
+		&cli.BoolFlag{
+			Name:  "unpin-sources",
+			Usage: "remove the pins of all members of a successful aggregation",
+		},
+		&cli.BoolFlag{
 			Name:        "snapshot-aggregate-candidates",
 			Usage:       "(debug) capture a materialized view of the available candidate list",
 			Destination: &captureAggregateCandidatesSnapshot,
@@ -518,7 +526,7 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 				JOIN cargo.dags d USING ( cid_v1 )
 				LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
 			WHERE
-				( d.size_actual IS NOT NULL AND d.size_actual <= %[1]d ) -- only pinned entries (FIXME for now do not deal with oversizes/that comes later)
+				( d.size_actual IS NOT NULL AND d.size_actual <= %[1]d ) -- only analysed entries (FIXME for now do not deal with oversizes/that comes later)
 					AND
 				( s.weight >= 0 OR s.weight IS NULL )
 					AND
@@ -542,7 +550,7 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 		WHERE
 			ds.entry_removed IS NULL
 				AND
-			-- only pinned entries (FIXME for now do not deal with oversizes/that comes later)
+			-- only analysed entries (FIXME for now do not deal with oversizes/that comes later)
 			( d.size_actual IS NOT NULL AND d.size_actual <= %[1]d )
 				AND
 			-- not yet aggregated
@@ -752,7 +760,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 
 	//
 	projectedSize += countBytes
-	log.Infof("%s: pinning, writing out projected %s bytes as car export, calculating commP and sha256",
+	log.Infof("%s: writing out projected %s bytes as car export, calculating commP and sha256",
 		aggLabel,
 		humanize.Comma(projectedSize),
 	)
@@ -775,17 +783,20 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	api := ipfsAPI(cctx)
 	api.SetTimeout(2*time.Hour - 5*time.Minute) // yes, obscene, but plausible
 
-	toUnpinOnError := res.carRoot.String()
-	defer func() {
-		if toUnpinOnError != "" {
-			msg := fmt.Sprintf("unpinning %s after unsuccessful export", toUnpinOnError)
-			err := api.Request("pin/rm").Arguments(toUnpinOnError).Exec(context.Background(), nil) // non-interruptable context
-			if err != nil {
-				msg += " failed: " + err.Error()
+	var toUnpinOnError string
+	if !cctx.Bool("skip-pinning") {
+		toUnpinOnError = res.carRoot.String()
+		defer func() {
+			if toUnpinOnError != "" {
+				msg := fmt.Sprintf("unpinning %s after unsuccessful export", toUnpinOnError)
+				err := api.Request("pin/rm").Arguments(toUnpinOnError).Exec(context.Background(), nil) // non-interruptable context
+				if err != nil {
+					msg += " failed: " + err.Error()
+				}
+				log.Warn(msg)
 			}
-			log.Warn(msg)
-		}
-	}()
+		}()
+	}
 
 	//
 	// async ref-walker ( this speeds up things considerably )
@@ -793,7 +804,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	go func() {
 		defer func() { doneCh <- struct{}{} }()
 
-		resp, err := api.Request("refs").Arguments(res.carRoot.String()).Option("unique", "true").Option("recursive", "true").Option("offline", false).Send(ctx)
+		resp, err := api.Request("refs").Arguments(res.carRoot.String()).Option("unique", "true").Option("recursive", "true").Send(ctx)
 		if err != nil {
 			errCh <- err
 		} else {
@@ -806,11 +817,15 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	}()
 
 	//
-	// async pinner
+	// async pinner, must start it either way to populate doneCh
 	go func() {
 		defer func() { doneCh <- struct{}{} }()
 
-		err := api.Request("pin/add").Option("offline", false).Arguments(res.carRoot.String()).Exec(ctx, nil)
+		if cctx.Bool("skip-pinning") {
+			return
+		}
+
+		err := api.Request("pin/add").Arguments(res.carRoot.String()).Exec(ctx, nil)
 		if err != nil {
 			errCh <- err
 		}
@@ -834,7 +849,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 		err := func() error {
 			var err error
 
-			apiresp, err = api.Request("dag/export").Option("offline", false).Arguments(res.carRoot.String()).Send(ctx)
+			apiresp, err = api.Request("dag/export").Arguments(res.carRoot.String()).Send(ctx)
 			if err != nil {
 				return err
 			}
@@ -972,14 +987,17 @@ watchdog:
 		return nil, err
 	}
 
+	sourcesToUnpin := make(chan string, len(res.manifestEntries))
 	links := make([][]interface{}, 0, len(res.manifestEntries))
 	for _, e := range res.manifestEntries {
+		sourcesToUnpin <- e.DagCidV1
 		links = append(links, []interface{}{
 			root,
 			e.DagCidV1,
 			fmt.Sprintf("Links/%d/Hash/Links/%d/Hash/Links/%d/Hash", e.PathIndexes[0], e.PathIndexes[1], e.PathIndexes[2]),
 		})
 	}
+	close(sourcesToUnpin)
 	if _, err = tx.CopyFrom(
 		ctx,
 		pgx.Identifier{"cargo", "aggregate_entries"},
@@ -1012,6 +1030,32 @@ watchdog:
 		float64(100*res.carSize)/float64(projectedSize),
 		fn,
 	)
+
+	if cctx.Bool("unpin-sources") {
+		log.Infof("unpinning %d source dags", len(sourcesToUnpin))
+		workerCount := len(sourcesToUnpin)
+		if cfgMax := cctx.Int("ipfs-api-max-workers"); workerCount > cfgMax {
+			workerCount = cfgMax
+		}
+		var wg sync.WaitGroup
+		for workerCount > 0 {
+			workerCount--
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					cidStr, chanOpen := <-sourcesToUnpin
+					if !chanOpen {
+						return
+					}
+					// nearly everything would have been unpinned already, so no error checks
+					// sadly this is somewhat slow, but oh well... better be extra proactive
+					api.Request("pin/rm").Arguments(cidStr).Exec(ctx, nil) //nolint:errcheck
+				}
+			}()
+		}
+		wg.Wait()
+	}
 
 	// Aggregate ready to go, fire off a bidbot request
 	// The request is opportunistic, only log its errors, do not fail

@@ -7,7 +7,7 @@ export SWEEP_MOST_AGE="${SWEEP_MOST_AGE:-30 days}"
 export SWEEP_LEAST_AGE="${SWEEP_LEAST_AGE:-15 minutes}"
 export SWEEP_EXTRA_COND="${SWEEP_EXTRA_COND:-}"
 export SWEEP_TIMEOUT_SEC="${SWEEP_TIMEOUT_SEC:-300}"
-export SWEEP_CONCURRENCY="${SWEEP_CONCURRENCY:-1024}"
+export SWEEP_CONCURRENCY="${SWEEP_CONCURRENCY:-512}"
 
 export SWEEP_IPFSAPI="${SWEEP_IPFSAPI:-$( grep "ipfs-api" "$HOME/dagcargo.toml" | cut -d '=' -f2- | sed 's/[ "]*//g' )}"
 SWEEP_IPFSAPI="${SWEEP_IPFSAPI:-http://localhost:5001}"
