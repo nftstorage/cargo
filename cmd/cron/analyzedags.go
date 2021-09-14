@@ -169,7 +169,7 @@ var analyzeDags = &cli.Command{
 		}
 		close(toAnalyzeCh)
 
-		log.Infof("about to analyze/pin %d dags", len(toAnalyzeCh))
+		log.Infof("about to analyze %d dags", len(toAnalyzeCh))
 
 		workerCount := len(toAnalyzeCh)
 		if workerCount == 0 {

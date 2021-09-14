@@ -22,7 +22,7 @@ GOLOG_LOG_FMT=json
 # Sadly things need a bounce once in a while, at least for now
 # Adding this as a workaround to get things unblocked super-short-term
 # ( the daemon is launched such that it autorestarts )
-23 */4 * * *    killall ipfs
+23 */3 * * *    IPFSAPI="${IPFSAPI:-$( grep "ipfs-api" "$HOME/dagcargo.toml" | cut -d '=' -f2- | sed 's/[ "]*//g' )}"; IPFSAPI="${IPFSAPI:-http://localhost:5001}"; curl -sXPOST "$IPFSAPI/api/v0/shutdown"
 
 # helper-sweeps ( every minute, rapid-fire, staying out of step with the analyzers above )
 # For a number of reasons and bugs the core go-based pin+analysis framework could get overwhelmed

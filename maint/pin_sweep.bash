@@ -48,7 +48,7 @@ echo "$(date -u): Attempting sweep of $( wc -w <<<"$cids_pending" ) DAGs [[ SWEE
 
 exec 3>&1
 pin_count="$(
- <<<"$cids_pending" xargs -P $SWEEP_CONCURRENCY -n1 -I{} bash -c "curl -m$SWEEP_TIMEOUT_SEC -sXPOST '$SWEEP_IPFSAPI/api/v0/pin/add?arg={}' | jq -r 'try .Pins[]'" \
+ <<<"$cids_pending" xargs -P $SWEEP_CONCURRENCY -n1 -I{} bash -c "curl -m$(( $SWEEP_TIMEOUT_SEC + 5 )) -sXPOST '$SWEEP_IPFSAPI/api/v0/pin/add?timeout=${SWEEP_TIMEOUT_SEC}s&arg={}' | jq -r 'try .Pins[]'" \
  | tee >( perl -pe '$|=1; s/.*/./s' >&3 ) \
  | wc -w
 )"
