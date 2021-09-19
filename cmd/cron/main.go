@@ -17,7 +17,6 @@ import (
 	prometheuspush "github.com/prometheus/client_golang/prometheus/push"
 	"github.com/urfave/cli/v2"
 	"github.com/urfave/cli/v2/altsrc"
-
 	"golang.org/x/sys/unix"
 )
 
@@ -165,9 +164,81 @@ func main() {
 		cancel()
 	}()
 
-	t0 := time.Now()
+	// wrap in a defer to always capture endstate/send a metric, even under panic()s
+	var (
+		t0  time.Time
+		err error
+	)
+	defer func() {
 
-	err := (&cli.App{
+		// shared log/metric emitter
+		// ( lock-contention does not count, see invocation below )
+		emitEndLogs := func(logSuccess bool) {
+
+			took := time.Since(t0).Truncate(time.Millisecond)
+			cmdPrefix := nonAlpha.ReplaceAllString("dagcargo_"+currentCmd, `_`)
+			logHdr := fmt.Sprintf("=== FINISH '%s' run", currentCmd)
+			logArgs := []interface{}{
+				"success", logSuccess,
+				"took", took.String(),
+			}
+
+			tookGauge := prometheus.NewGauge(prometheus.GaugeOpts{
+				Name: fmt.Sprintf("%s_run_time", cmdPrefix),
+				Help: "How long did the job take (in milliseconds)",
+			})
+			tookGauge.Set(float64(took.Milliseconds()))
+			successGauge := prometheus.NewGauge(prometheus.GaugeOpts{
+				Name: fmt.Sprintf("%s_success", cmdPrefix),
+				Help: "Whether the job completed with success(1) or failure(0)",
+			})
+
+			if logSuccess {
+				log.Infow(logHdr, logArgs...)
+				successGauge.Set(1)
+			} else {
+				log.Warnw(logHdr, logArgs...)
+				successGauge.Set(0)
+			}
+
+			if promErr := prometheuspush.New(promURL, cmdPrefix).
+				BasicAuth(promUser, promPass).
+				Collector(tookGauge).
+				Collector(successGauge).
+				Push(); promErr != nil {
+				log.Warnf("push of prometheus metrics to %s failed: %s", promURL, promErr)
+			}
+		}
+
+		// a panic condition takes precedence
+		if r := recover(); r != nil {
+			if err == nil {
+				err = fmt.Errorf("panic encountered: %s", r)
+			} else {
+				err = fmt.Errorf("panic encountered (in addition to error '%s'): %s", err, r)
+			}
+		}
+
+		if err != nil {
+			// if we are not interactive - be quiet on a failed lock
+			if !isTerm && errors.As(err, new(fslock.LockedError)) {
+				cleanup()
+				os.Exit(1)
+			}
+
+			log.Error(err)
+			if currentCmdLock != nil {
+				emitEndLogs(false)
+			}
+			cleanup()
+			os.Exit(1)
+		} else if currentCmdLock != nil {
+			emitEndLogs(true)
+		}
+	}()
+
+	t0 = time.Now()
+	err = (&cli.App{
 		Name:   "cargo-cron",
 		Usage:  "Misc background processes for dagcargo",
 		Before: beforeCliSetup, // obtains locks and emits the proper init loglines
@@ -184,61 +255,6 @@ func main() {
 		},
 	}).RunContext(ctx, os.Args)
 
-	// lambda to emit output on actual runs
-	// ( lock-contention does not count, see invocation below )
-	emitEndLogs := func(logSuccess bool) {
-
-		took := time.Since(t0).Truncate(time.Millisecond)
-		cmdPrefix := nonAlpha.ReplaceAllString("dagcargo_"+currentCmd, `_`)
-		logHdr := fmt.Sprintf("=== FINISH '%s' run", currentCmd)
-		logArgs := []interface{}{
-			"success", logSuccess,
-			"took", took.String(),
-		}
-
-		tookGauge := prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: fmt.Sprintf("%s_run_time", cmdPrefix),
-			Help: "How long did the job take (in milliseconds)",
-		})
-		tookGauge.Set(float64(took.Milliseconds()))
-		successGauge := prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: fmt.Sprintf("%s_success", cmdPrefix),
-			Help: "Whether the job completed with success(1) or failure(0)",
-		})
-
-		if logSuccess {
-			log.Infow(logHdr, logArgs...)
-			successGauge.Set(1)
-		} else {
-			log.Warnw(logHdr, logArgs...)
-			successGauge.Set(0)
-		}
-
-		if promErr := prometheuspush.New(promURL, cmdPrefix).
-			BasicAuth(promUser, promPass).
-			Collector(tookGauge).
-			Collector(successGauge).
-			Push(); promErr != nil {
-			log.Warnf("push of prometheus metrics to %s failed: %s", promURL, promErr)
-		}
-	}
-
-	if err != nil {
-		// if we are not interactive - be quiet on a failed lock
-		if !isTerm && errors.As(err, new(fslock.LockedError)) {
-			cleanup()
-			os.Exit(1)
-		}
-
-		log.Error(err)
-		if currentCmdLock != nil {
-			emitEndLogs(false)
-		}
-		cleanup()
-		os.Exit(1)
-	} else if currentCmdLock != nil {
-		emitEndLogs(true)
-	}
 }
 
 var beforeCliSetup = func(cctx *cli.Context) error {
