@@ -515,26 +515,6 @@ var aggregateDags = &cli.Command{
 func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) string {
 	return fmt.Sprintf(
 		`
-		WITH active_sources AS (
-			SELECT
-					s.project,
-					ds.srcid,
-					MIN(ds.entry_created) AS oldest_unaggregated,
-					COALESCE( s.weight, 100 ) AS weight
-				FROM cargo.dag_sources ds
-				JOIN cargo.sources s USING ( srcid )
-				JOIN cargo.dags d USING ( cid_v1 )
-				LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
-			WHERE
-				( d.size_actual IS NOT NULL AND d.size_actual <= %[1]d ) -- only analysed entries (FIXME for now do not deal with oversizes/that comes later)
-					AND
-				( s.weight >= 0 OR s.weight IS NULL )
-					AND
-				ds.entry_removed IS NULL
-					AND
-				ae.cid_v1 IS NULL
-			GROUP BY s.project, ds.srcid, weight
-		)
 		SELECT
 				s.project,
 				s.srcid,
@@ -544,7 +524,7 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 				ds.entry_last_updated
 			FROM cargo.dag_sources ds
 			JOIN cargo.dags d USING ( cid_v1 )
-			JOIN active_sources s USING ( srcid )
+			JOIN cargo.sources s USING ( srcid )
 			-- not yet aggregated anti-join (IS NULL below)
 			LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
 		WHERE
@@ -552,6 +532,9 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 				AND
 			-- only analysed entries (FIXME for now do not deal with oversizes/that comes later)
 			( d.size_actual IS NOT NULL AND d.size_actual <= %[1]d )
+				AND
+			-- only active sources
+			( s.weight >= 0 OR s.weight IS NULL )
 				AND
 			-- not yet aggregated
 			ae.cid_v1 IS NULL
@@ -562,14 +545,16 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 					FROM cargo.refs r
 					JOIN cargo.dag_sources rds USING ( cid_v1 )
 					JOIN cargo.dags rd USING ( cid_v1 )
-					JOIN active_sources asrc USING ( srcid )
+					JOIN cargo.sources rs USING ( srcid )
 					LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
 				WHERE
 					r.ref_cid = d.cid_v1
 						AND
 					rds.entry_removed IS NULL
 						AND
-					rd.size_actual <= %[1]d
+					( rd.size_actual IS NOT NULL AND rd.size_actual <= %[1]d )
+						AND
+					( rs.weight >= 0 OR rs.weight IS NULL )
 						AND
 					rae.aggregate_cid IS NULL
 			)
@@ -579,19 +564,21 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 				LEAST( ds.entry_created, d.entry_created ) <= ( NOW() - '%[2]s'::INTERVAL )
 					OR
 				EXISTS (
-					SELECT 42
-						FROM cargo.refs sr
-						JOIN cargo.dags sd
-							ON sr.ref_cid = sd.cid_v1
-						JOIN cargo.dag_sources sds
-							ON sr.ref_cid = sds.cid_v1 AND ds.srcid = sds.srcid
+					SELECT 42 FROM cargo.refs sr, cargo.dags sd, cargo.dag_sources sds
 					WHERE
 						ds.cid_v1 = sr.cid_v1
+							AND
+						sr.ref_cid = sd.cid_v1
+							AND
+						sd.cid_v1 = sds.cid_v1
+							AND
+						-- same srcid as "parent"
+						ds.srcid = sds.srcid
 							AND
 						LEAST( sds.entry_created, sd.entry_created ) <= ( NOW() - '%[2]s'::INTERVAL )
 				)
 			)
-		ORDER BY s.weight DESC, s.oldest_unaggregated, s.srcid, d.size_actual DESC, d.cid_v1
+		ORDER BY s.weight DESC NULLS FIRST, s.srcid, d.size_actual DESC, d.cid_v1
 		`,
 		targetMaxSize,
 		fmt.Sprintf("%d hours", settleDelayHours),
