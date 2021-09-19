@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v4"
 	"github.com/prometheus/client_golang/prometheus"
 	prometheuspush "github.com/prometheus/client_golang/prometheus/push"
 	"github.com/urfave/cli/v2"
@@ -23,6 +24,8 @@ type cargoMetric struct {
 	help  string
 	query string
 }
+
+var workerCount = 24
 
 var pushMetrics = &cli.Command{
 	Usage:  "Push service metrics to external collectors",
@@ -864,7 +867,6 @@ func pushPrometheusMetrics(cctx *cli.Context) error {
 	var mu sync.Mutex
 	prom := prometheuspush.New(promURL, "dagcargo").BasicAuth(promUser, promPass)
 
-	workerCount := 24
 	doneCh := make(chan struct{}, workerCount)
 	var firstErrorSeen error
 
@@ -919,7 +921,13 @@ func pushPrometheusMetrics(cctx *cli.Context) error {
 func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, error) {
 
 	t0 := time.Now()
-	rows, err := db.Query(ctx, m.query)
+	tx, err := db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(context.Background()) //nolint:errcheck
+
+	rows, err := tx.Query(ctx, m.query)
 	if err != nil {
 		return nil, err
 	}
