@@ -335,7 +335,7 @@ var aggregateDags = &cli.Command{
 				sizeStrings[i] = humanize.Comma(int64(u.carSize))
 				standaloneCount += int64(len(u.standaloneEntries))
 			}
-			log.Infof("attempting to recombine %s standalone dags from %s undersized cars/groups with lengths: %s",
+			log.Infof("attempting to recombine %s standalone dags from %s undersized cars/groups with lengths:  %s",
 				humanize.Comma(standaloneCount),
 				humanize.Comma(int64(len(undersizedInvalidCars))),
 				strings.Join(sizeStrings, "  "),
@@ -343,7 +343,7 @@ var aggregateDags = &cli.Command{
 
 			shardSizes := make([][]string, 0)
 			aggBundles = make([][]dagaggregator.AggregateDagEntry, 0)
-			for {
+			for len(undersizedInvalidCars) > 1 {
 				var runBytes uint64
 
 				// assume uniform-ish distribution of large/small
@@ -423,7 +423,7 @@ var aggregateDags = &cli.Command{
 			return xerrors.Errorf("impossible: rehydration attempt with more than 1 undersized car")
 		}
 
-		log.Info("forcing time-boxed rehydration from preexisting already-packaged standalone dags")
+		log.Info("forcing time-boxed rehydration: retrieving list of preexisting already-packaged standalone dags")
 
 		rows, err = db.Query(
 			ctx,
