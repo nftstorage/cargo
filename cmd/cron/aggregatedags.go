@@ -162,8 +162,9 @@ var aggregateDags = &cli.Command{
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
 
-		masterListSQL := eligibleForAggregationSQL(targetMaxSize, settleDelayHours)
-		// fmt.Println(masterListSQL)
+		// the order is critical so that we can group same-source dags together
+		masterListSQL := eligibleForAggregationSQL(targetMaxSize, settleDelayHours) +
+			` ORDER BY s.weight DESC NULLS FIRST, s.srcid, d.size_actual DESC, d.cid_v1`
 
 		var rows pgx.Rows
 		if !captureAggregateCandidatesSnapshot {
@@ -578,7 +579,6 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 						LEAST( sds.entry_created, sd.entry_created ) <= ( NOW() - '%[2]s'::INTERVAL )
 				)
 			)
-		ORDER BY s.weight DESC NULLS FIRST, s.srcid, d.size_actual DESC, d.cid_v1
 		`,
 		targetMaxSize,
 		fmt.Sprintf("%d hours", settleDelayHours),
