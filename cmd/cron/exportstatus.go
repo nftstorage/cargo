@@ -310,14 +310,18 @@ func faunaUploadEntriesAndMarkUpdated(
 			})
 			if err == nil {
 				markCidDone = append(markCidDone, entries[i].cidKey)
-			} else {
+			} else if err.Error() == "Missing content CID" {
 				log.Errorw("missing content CID", "aggregateCid", aggCid, "entries", entries[i:i+1])
+				err = nil // continue because... what else can we do :(
+			} else {
 				return xerrors.Errorf("addAggregateEntries() of entry %s to aggregate %s failed: %w", entries[i].Cid, aggCid, err)
 			}
 		}
 
-		// how did we get here?!
-		log.Warnf("addAggregateEntries of %d entries to aggregate %s failed as a batch, but succeeded with each individually... sigh", len(entries), aggCid)
+		// these will *not* match if we bailed at the above `err = nil`
+		if len(entries) == len(markCidDone) {
+			log.Warnf("addAggregateEntries of %d entries to aggregate %s failed as a batch, but succeeded with each individually... sigh", len(entries), aggCid)
+		}
 	}
 
 	if err != nil {
