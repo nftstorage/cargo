@@ -358,6 +358,19 @@ var metricsList = []cargoMetric{
 							AND
 						ds.entry_removed IS NOT NULL
 							AND
+						-- ensure there isn't another active entry for the same dag
+						NOT EXISTS (
+							SELECT 42
+								FROM cargo.dag_sources actds
+								JOIN cargo.sources acts USING ( srcid )
+							WHERE
+								actds.cid_v1 = ds.cid_v1
+									AND
+								actds.entry_removed IS NULL
+									AND
+								( acts.weight >= 0 OR acts.weight IS NULL )
+						)
+							AND
 						-- ensure we are not a part of something else active
 						NOT EXISTS (
 							SELECT 42
@@ -731,7 +744,7 @@ func init() {
 								)
 							GROUP BY s.project
 						)
-					SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+					SELECT p.project::TEXT, q.val
 						FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
 						LEFT JOIN q USING ( project )
 					`,
@@ -783,7 +796,7 @@ func init() {
 								)
 							GROUP BY s.project
 						)
-					SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+					SELECT p.project::TEXT, q.val
 						FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
 						LEFT JOIN q USING ( project )
 					`,
@@ -835,7 +848,7 @@ func init() {
 								)
 							GROUP BY s.project
 						)
-					SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+					SELECT p.project::TEXT, q.val
 						FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
 						LEFT JOIN q USING ( project )
 					`,
@@ -938,7 +951,7 @@ func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, e
 		return nil, xerrors.Errorf("unexpected %d columns in resultset", len(fd))
 	}
 
-	res := make(map[string]float64)
+	res := make(map[string]*float64)
 
 	if len(fd) == 1 {
 
@@ -946,7 +959,7 @@ func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, e
 			return nil, xerrors.New("zero rows in result")
 		}
 
-		var val int64
+		var val *int64
 		if err := rows.Scan(&val); err != nil {
 			return nil, err
 		}
@@ -955,19 +968,31 @@ func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, e
 			return nil, xerrors.New("unexpectedly received more than one result")
 		}
 
-		res[""] = float64(val)
+		var fval *float64
+		if val != nil {
+			fv := float64(*val)
+			fval = &fv
+		}
+
+		res[""] = fval
 
 	} else {
 
 		var group string
-		var val int64
+		var val *int64
 		for rows.Next() {
 
 			if err := rows.Scan(&group, &val); err != nil {
 				return nil, err
 			}
 
-			res[group] = float64(val)
+			var fval *float64
+			if val != nil {
+				fv := float64(*val)
+				fval = &fv
+			}
+
+			res[group] = fval
 		}
 	}
 
@@ -989,14 +1014,18 @@ func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, e
 
 		if m.kind == cargoMetricCounter {
 			log.Infow("evaluatedCounter", "name", m.name, "label", label, "value", v, "tookSeconds", took)
-			c := prometheus.NewCounter(prometheus.CounterOpts{Name: m.name, Help: m.help, ConstLabels: label})
-			c.Add(v)
-			cl = append(cl, c)
+			if v != nil {
+				c := prometheus.NewCounter(prometheus.CounterOpts{Name: m.name, Help: m.help, ConstLabels: label})
+				c.Add(*v)
+				cl = append(cl, c)
+			}
 		} else if m.kind == cargoMetricGauge {
 			log.Infow("evaluatedGauge", "name", m.name, "label", label, "value", v, "tookSeconds", took)
-			c := prometheus.NewGauge(prometheus.GaugeOpts{Name: m.name, Help: m.help, ConstLabels: label})
-			c.Set(v)
-			cl = append(cl, c)
+			if v != nil {
+				c := prometheus.NewGauge(prometheus.GaugeOpts{Name: m.name, Help: m.help, ConstLabels: label})
+				c.Set(*v)
+				cl = append(cl, c)
+			}
 		} else {
 			return nil, xerrors.Errorf("unknown metric kind '%s'", m.kind)
 		}
