@@ -424,6 +424,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 		} else {
 
 			if cctx.Bool("unpin-after-analysis") {
+				currentState.Store(fmt.Sprintf("pin/rm %s", rootCid.String()))
 				unpinErr := api.Request("pin/rm").Arguments(rootCid.String()).Exec(context.Background(), nil)
 				if unpinErr != nil {
 					log.Warnf("unpinning of %s after successful analysis failed: %s", rootCid.String(), unpinErr)

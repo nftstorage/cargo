@@ -4,35 +4,35 @@
 #  crontab - < maint/user_crontab
 #
 # Test for pending changes:
-#  diff -U0 maint/user_crontab <( crontab -l )
+#  diff -U0 maint/user_crontab <( crontab -l ) | less -S
 #
 GOLOG_LOG_FMT=json
 
 # Everything fires every 5 mins: if another process is running, the lock is silently observed without logging anything
-*/5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron get-new-dags                      >>"$LOGDIR/cron_get-new-dags.log.ndjson" 2>&1
-*/5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron get-new-nfts                      >>"$LOGDIR/cron_get-new-nfts.log.ndjson" 2>&1
-*/5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron push-metrics                      >>"$LOGDIR/cron_push-metrics.log.ndjson" 2>&1
-*/5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron export-status                     >>"$LOGDIR/cron_export-status.log.ndjson" 2>&1
-*/5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron old-export-status                 >>"$LOGDIR/cron_export-status-cf.log.ndjson" 2>&1
-*/5 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron track-deals                       >>"$LOGDIR/cron_track-deals.log.ndjson" 2>&1
-*/3 * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron analyze-dags --prepinned-only --unpin-after-analysis >>"$LOGDIR/cron_analyze-dags.log.ndjson" 2>&1
-34 * * * *      LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && $HOME/dagcargo/bin/dagcargo_cron aggregate-dags --skip-pinning --unpin-sources --export-dir ~/CAR_DATA >>"$LOGDIR/cron_aggregate-dags.log.ndjson" 2>&1
+*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_get-new-dags.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron get-new-dags
+*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_get-new-nfts.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron get-new-nfts
+*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_push-metrics.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron push-metrics
+*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_export-status.log.ndjson     $HOME/dagcargo/bin/dagcargo_cron export-status
+*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_export-status-cf.log.ndjson  $HOME/dagcargo/bin/dagcargo_cron old-export-status
+*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_track-deals.log.ndjson       $HOME/dagcargo/bin/dagcargo_cron track-deals
+* * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_analyze-dags.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron analyze-dags --prepinned-only --unpin-after-analysis
+44 * * * *  $HOME/dagcargo/maint/log_and_run.bash cron_aggregate-dags.log.ndjson    $HOME/dagcargo/bin/dagcargo_cron aggregate-dags --skip-pinning --unpin-sources --export-dir ~/CAR_DATA
 
 ### FIXME!!!!
 # Sadly things need a bounce once in a while, at least for now
 # Adding this as a workaround to get things unblocked super-short-term
 # ( the daemon is launched such that it autorestarts )
-23 */3 * * *    IPFSAPI="${IPFSAPI:-$( grep "ipfs-api" "$HOME/dagcargo.toml" | cut -d '=' -f2- | sed 's/[ "]*//g' )}"; IPFSAPI="${IPFSAPI:-http://localhost:5001}"; curl -sXPOST "$IPFSAPI/api/v0/shutdown"
+23 */2 * * *  IPFSAPI="${IPFSAPI:-$( grep "ipfs-api" "$HOME/dagcargo.toml" | cut -d '=' -f2- | sed 's/[ "]*//g' )}"; IPFSAPI="${IPFSAPI:-http://localhost:5001}"; curl -sXPOST "$IPFSAPI/api/v0/shutdown"
 
-# helper-sweeps ( every minute, rapid-fire, staying out of step with the analyzers above )
-# For a number of reasons and bugs the core go-based pin+analysis framework could get overwhelmed
-# what follows is a set of "only pin, we will do the rest" jobs that help with:
+# helper-sweeps: a set of "only pin, we will do the rest" jobs that help with:
 # - breaking up the outstanding queue and prioritizing it properly
 # - allowing looking back "further in time" to catch stragglers
-24,54 * * * * LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && SWEEP_TIMEOUT_SEC=7200 SWEEP_MOST_AGE="90 days" SWEEP_LEAST_AGE="23 hours" SWEEP_EXTRA_COND="AND NOT cluster_pin_lag"               $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/pin_sweep_long.log" 2>&1
-* * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && SWEEP_TIMEOUT_SEC=1800 SWEEP_MOST_AGE="1 days"  SWEEP_LEAST_AGE="0 hours"  SWEEP_EXTRA_COND="AND weight >= 0 AND NOT is_tombstone"  $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/pin_sweep_heavy.log" 2>&1
-* * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && SWEEP_TIMEOUT_SEC=60   SWEEP_MOST_AGE="1 days"  SWEEP_LEAST_AGE="0 hours"  SWEEP_EXTRA_COND="AND weight >= 0 AND project = 2"       $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/pin_sweep_immediate_nftstorage.log" 2>&1
-* * * * *     LOGDIR="$HOME/LOGS/$(date -u '+\%Y-\%m-\%d')"; mkdir -p "$LOGDIR" && SWEEP_TIMEOUT_SEC=60   SWEEP_MOST_AGE="1 days"  SWEEP_LEAST_AGE="0 hours"  SWEEP_EXTRA_COND="AND weight >= 0 AND project != 2"      $HOME/dagcargo/maint/pin_sweep.bash >>"$LOGDIR/pin_sweep_immediate_rest.log" 2>&1
+* * * * *   SWEEP_TIMEOUT_SEC=180  SWEEP_MOST_AGE="30 minutes"  SWEEP_LEAST_AGE="0 minutes"   SWEEP_CONCURRENCY=128  SWEEP_EXTRA_COND="weight >= 0 AND ( cid_v1 LIKE 'bafk\%' OR project != 2 )"  $HOME/dagcargo/maint/log_and_run.bash pin_sweep_immediate_easy.log  $HOME/dagcargo/maint/pin_sweep.bash
+* * * * *   SWEEP_TIMEOUT_SEC=240  SWEEP_MOST_AGE="30 minutes"  SWEEP_LEAST_AGE="0 minutes"   SWEEP_CONCURRENCY=256  SWEEP_EXTRA_COND="weight >= 0 AND cid_v1 NOT LIKE 'bafk\%' AND project = 2"  $HOME/dagcargo/maint/log_and_run.bash pin_sweep_immediate_rest.log  $HOME/dagcargo/maint/pin_sweep.bash
+* * * * *   SWEEP_TIMEOUT_SEC=1800 SWEEP_MOST_AGE="1 days"      SWEEP_LEAST_AGE="30 minutes"  SWEEP_CONCURRENCY=1024 SWEEP_EXTRA_COND="weight >= 0 AND NOT cluster_pin_lag"                       $HOME/dagcargo/maint/log_and_run.bash pin_sweep_heavy.log           $HOME/dagcargo/maint/pin_sweep.bash
+* * * * *   SWEEP_TIMEOUT_SEC=7200 SWEEP_MOST_AGE="30 days"     SWEEP_LEAST_AGE="1 days"      SWEEP_CONCURRENCY=512                                                                               $HOME/dagcargo/maint/log_and_run.bash pin_sweep_old.log             $HOME/dagcargo/maint/pin_sweep.bash
+* * * * *   SWEEP_TIMEOUT_SEC=7200 SWEEP_MOST_AGE="90 days"     SWEEP_LEAST_AGE="30 days"     SWEEP_CONCURRENCY=512                                                                               $HOME/dagcargo/maint/log_and_run.bash pin_sweep_ancient.log         $HOME/dagcargo/maint/pin_sweep.bash
 
-# list deals-to-be-made
-*/5 * * * *     $HOME/dagcargo/maint/export_pending_replication.bash
+# deal status overview
+# https://cargo.web3.storage/status/pending_replication.json
+*/5 * * * * $HOME/dagcargo/maint/export_pending_replication.bash
