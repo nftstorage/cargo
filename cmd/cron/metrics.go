@@ -290,10 +290,12 @@ var metricsList = []cargoMetric{
 				),
 				q AS (
 					SELECT s.project, SUM(d.size_actual) val
-						FROM active_sources s
-						JOIN cargo.dag_sources ds USING ( srcid )
-						JOIN cargo.dags d USING ( cid_v1 )
+						FROM active_sources s, cargo.dag_sources ds, cargo.dags d
 					WHERE
+						s.srcid = ds.srcid
+							AND
+						ds.cid_v1 = d.cid_v1
+							AND
 						d.size_actual IS NOT NULL
 							AND
 						ds.entry_removed IS NULL
@@ -301,11 +303,17 @@ var metricsList = []cargoMetric{
 						-- ensure we are not a part of something else active
 						NOT EXISTS (
 							SELECT 42
-								FROM cargo.refs r
-								JOIN cargo.dag_sources rds
-									ON r.cid_v1 = rds.cid_v1 AND r.ref_cid = d.cid_v1 AND rds.entry_removed IS NULL
-								JOIN cargo.sources rs
-									ON rds.srcid = rs.srcid AND ( rs.weight >= 0 OR rs.weight IS NULL )
+								FROM cargo.refs r, cargo.dag_sources rds, cargo.sources rs
+							WHERE
+								r.ref_cid = d.cid_v1
+									AND
+								r.cid_v1 = rds.cid_v1
+									AND
+								rds.entry_removed IS NULL
+									AND
+								rds.srcid = rs.srcid
+									AND
+								( rs.weight >= 0 OR rs.weight IS NULL )
 						)
 					GROUP BY s.project
 				)
@@ -361,12 +369,13 @@ var metricsList = []cargoMetric{
 						-- ensure there isn't another active entry for the same dag
 						NOT EXISTS (
 							SELECT 42
-								FROM cargo.dag_sources actds
-								JOIN cargo.sources acts USING ( srcid )
+								FROM cargo.dag_sources actds, cargo.sources acts
 							WHERE
 								actds.cid_v1 = ds.cid_v1
 									AND
 								actds.entry_removed IS NULL
+									AND
+								actds.srcid = acts.srcid
 									AND
 								( acts.weight >= 0 OR acts.weight IS NULL )
 						)
@@ -374,11 +383,17 @@ var metricsList = []cargoMetric{
 						-- ensure we are not a part of something else active
 						NOT EXISTS (
 							SELECT 42
-								FROM cargo.refs r
-								JOIN cargo.dag_sources rds
-									ON r.cid_v1 = rds.cid_v1 AND r.ref_cid = d.cid_v1 AND rds.entry_removed IS NULL
-								JOIN cargo.sources rs
-									ON rds.srcid = rs.srcid AND ( rs.weight >= 0 OR rs.weight IS NULL )
+								FROM cargo.refs r, cargo.dag_sources rds, cargo.sources rs
+							WHERE
+								r.ref_cid = d.cid_v1
+									AND
+								r.cid_v1 = rds.cid_v1
+									AND
+								rds.entry_removed IS NULL
+									AND
+								rds.srcid = rs.srcid
+									AND
+								( rs.weight >= 0 OR rs.weight IS NULL )
 						)
 					GROUP BY s.project
 				)
@@ -411,11 +426,17 @@ var metricsList = []cargoMetric{
 						-- ensure we are not a part of something else active
 						NOT EXISTS (
 							SELECT 42
-								FROM cargo.refs r
-								JOIN cargo.dag_sources rds
-									ON r.cid_v1 = rds.cid_v1 AND r.ref_cid = d.cid_v1 AND rds.entry_removed IS NULL
-								JOIN cargo.sources rs
-									ON rds.srcid = rs.srcid AND ( rs.weight >= 0 OR rs.weight IS NULL )
+								FROM cargo.refs r, cargo.dag_sources rds, cargo.sources rs
+							WHERE
+								r.ref_cid = d.cid_v1
+									AND
+								r.cid_v1 = rds.cid_v1
+									AND
+								rds.entry_removed IS NULL
+									AND
+								rds.srcid = rs.srcid
+									AND
+								( rs.weight >= 0 OR rs.weight IS NULL )
 						)
 					GROUP BY s.project
 				)
@@ -573,9 +594,13 @@ var metricsList = []cargoMetric{
 					WHERE
 						EXISTS (
 							SELECT 42
-								FROM cargo.aggregate_entries ae
-								JOIN cargo.deals de
-									ON ae.cid_v1 = ds.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status = 'active'
+								FROM cargo.aggregate_entries ae, cargo.deals de
+							WHERE
+								ae.cid_v1 = ds.cid_v1
+									AND
+								ae.aggregate_cid = de.aggregate_cid
+									AND
+								de.status = 'active'
 						)
 					GROUP BY s.project
 				)
@@ -606,9 +631,13 @@ var metricsList = []cargoMetric{
 							AND
 						NOT EXISTS (
 							SELECT 42
-								FROM cargo.aggregate_entries ae
-								JOIN cargo.deals de
-									ON ae.cid_v1 = ds.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status = 'active'
+								FROM cargo.aggregate_entries ae, cargo.deals de
+							WHERE
+								ae.cid_v1 = ds.cid_v1
+									AND
+								ae.aggregate_cid = de.aggregate_cid
+									AND
+								de.status = 'active'
 						)
 					GROUP BY s.project
 				)
@@ -720,9 +749,11 @@ func init() {
 										PERCENTILE_CONT(0.%d) WITHIN GROUP ( ORDER BY
 											(
 												SELECT MIN( a.entry_created )
-													FROM cargo.aggregates a
-													JOIN cargo.aggregate_entries ae
-														ON a.aggregate_cid = ae.aggregate_cid AND ae.cid_v1 = ds.cid_v1
+													FROM cargo.aggregate_entries ae, cargo.aggregates a
+												WHERE
+													ae.cid_v1 = ds.cid_v1
+														AND
+													a.aggregate_cid = ae.aggregate_cid
 											) - ds.entry_created
 										)
 									)::INTEGER / 60 AS val
@@ -770,11 +801,15 @@ func init() {
 										PERCENTILE_CONT(0.%d) WITHIN GROUP ( ORDER BY
 											(
 												SELECT MIN( dev.entry_created )
-													FROM cargo.aggregate_entries ae
-													JOIN cargo.deals de
-														ON ae.aggregate_cid = de.aggregate_cid AND ae.cid_v1 = ds.cid_v1
-													JOIN cargo.deal_events dev
-														ON de.deal_id = dev.deal_id AND dev.status = 'published'
+													FROM cargo.aggregate_entries ae, cargo.deals de, cargo.deal_events dev
+												WHERE
+													ae.cid_v1 = ds.cid_v1
+														AND
+													ae.aggregate_cid = de.aggregate_cid
+														AND
+													de.deal_id = dev.deal_id
+														AND
+													dev.status = 'published'
 											) - ds.entry_created
 										)
 									)::INTEGER / 60 AS val
@@ -822,11 +857,15 @@ func init() {
 										PERCENTILE_CONT(0.%d) WITHIN GROUP ( ORDER BY
 											(
 												SELECT MIN( dev.entry_created )
-													FROM cargo.aggregate_entries ae
-													JOIN cargo.deals de
-														ON ae.aggregate_cid = de.aggregate_cid AND ae.cid_v1 = ds.cid_v1
-													JOIN cargo.deal_events dev
-														ON de.deal_id = dev.deal_id AND dev.status = 'active'
+													FROM cargo.aggregate_entries ae, cargo.deals de, cargo.deal_events dev
+												WHERE
+													ae.cid_v1 = ds.cid_v1
+														AND
+													ae.aggregate_cid = de.aggregate_cid
+														AND
+													de.deal_id = dev.deal_id
+														AND
+													dev.status = 'active'
 											) - ds.entry_created
 										)
 									)::INTEGER / 60 AS val
