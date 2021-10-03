@@ -71,7 +71,6 @@ CREATE TABLE IF NOT EXISTS cargo.dags (
 );
 CREATE INDEX IF NOT EXISTS dags_last_updated_idx ON cargo.dags ( entry_last_updated );
 CREATE INDEX IF NOT EXISTS dags_size_actual ON cargo.dags ( size_actual );
-CREATE INDEX IF NOT EXISTS dags_has_size_actual ON cargo.dags ( cid_v1 ) WHERE size_actual IS NOT NULL;
 CREATE TRIGGER trigger_dag_insert
   BEFORE INSERT ON cargo.dags
   FOR EACH ROW

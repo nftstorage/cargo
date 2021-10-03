@@ -164,19 +164,18 @@ var aggregateDags = &cli.Command{
 
 		// the order is critical so that we can group same-source dags together
 		masterListSQL := eligibleForAggregationSQL(targetMaxSize, settleDelayHours) +
-			` ORDER BY s.weight DESC NULLS FIRST, s.srcid, d.size_actual DESC, d.cid_v1`
+			` ORDER BY weight DESC NULLS FIRST, srcid, size_actual DESC, cid_v1`
 
-		var rows pgx.Rows
-		if !captureAggregateCandidatesSnapshot {
-			rows, err = db.Query(ctx, masterListSQL)
-		} else {
+		if captureAggregateCandidatesSnapshot {
 			mvName := `cargo.debug_aggregate_candidates_snapshot__` + time.Now().Format("2006_01_02__15_04_05")
 			_, err = db.Exec(ctx, fmt.Sprintf("CREATE MATERIALIZED VIEW %s AS\n%s", mvName, masterListSQL))
 			if err != nil {
 				return err
 			}
-			rows, err = db.Query(ctx, `SELECT * FROM `+mvName)
+			masterListSQL = `SELECT * FROM ` + mvName
 		}
+
+		rows, err := db.Query(ctx, masterListSQL)
 		if err != nil {
 			return err
 		}
@@ -192,7 +191,7 @@ var aggregateDags = &cli.Command{
 			var pending pendingDag
 			var cidStr string
 
-			if err = rows.Scan(nil, &pending.srcid, &cidStr, &pending.aggentry.UniqueBlockCumulativeSize, &pending.aggentry.UniqueBlockCount, &pending.sourceStamp); err != nil {
+			if err = rows.Scan(&pending.srcid, &cidStr, &pending.aggentry.UniqueBlockCumulativeSize, &pending.aggentry.UniqueBlockCount, &pending.sourceStamp, nil, nil, nil); err != nil {
 				return err
 			}
 
@@ -516,70 +515,65 @@ var aggregateDags = &cli.Command{
 func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) string {
 	return fmt.Sprintf(
 		`
-		SELECT
-				s.project,
-				s.srcid,
-				d.cid_v1,
-				d.size_actual,
-				( SELECT 1+COUNT(*) FROM cargo.refs r WHERE r.cid_v1 = d.cid_v1 ) AS node_count,
-				ds.entry_last_updated
-			FROM cargo.dag_sources ds
-			JOIN cargo.dags d USING ( cid_v1 )
-			JOIN cargo.sources s USING ( srcid )
-			-- not yet aggregated anti-join (IS NULL below)
-			LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
+		WITH
+			prefiltered AS (
+				SELECT
+						s.srcid,
+						d.cid_v1,
+						d.size_actual,
+						( SELECT 1+COUNT(*) FROM cargo.refs r WHERE r.cid_v1 = d.cid_v1 ) AS node_count,
+						ds.entry_last_updated,
+						ds.entry_created,
+						s.project,
+						s.weight
+					FROM cargo.dag_sources ds
+					JOIN cargo.dags d USING ( cid_v1 )
+					JOIN cargo.sources s USING ( srcid )
+					-- not yet aggregated anti-join (IS NULL below)
+					LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
+				WHERE
+					ds.entry_removed IS NULL
+						AND
+					-- only analysed entries (FIXME for now do not deal with oversizes/that comes later)
+					( d.size_actual IS NOT NULL AND d.size_actual <= %[1]d )
+						AND
+					-- only active sources
+					( s.weight >= 0 OR s.weight IS NULL )
+						AND
+					-- not yet aggregated
+					ae.cid_v1 IS NULL
+			)
+		SELECT *
+			FROM prefiltered pf
 		WHERE
-			ds.entry_removed IS NULL
-				AND
-			-- only analysed entries (FIXME for now do not deal with oversizes/that comes later)
-			( d.size_actual IS NOT NULL AND d.size_actual <= %[1]d )
-				AND
-			-- only active sources
-			( s.weight >= 0 OR s.weight IS NULL )
-				AND
-			-- not yet aggregated
-			ae.cid_v1 IS NULL
-				AND
 			-- exclude members of something else *that is subject to aggregation*
 			NOT EXISTS (
 				SELECT 42
-					FROM cargo.refs r
-					JOIN cargo.dag_sources rds USING ( cid_v1 )
-					JOIN cargo.dags rd USING ( cid_v1 )
-					JOIN cargo.sources rs USING ( srcid )
-					LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
+					FROM cargo.refs r, prefiltered pfparent
 				WHERE
-					r.ref_cid = d.cid_v1
+					pf.cid_v1 = r.ref_cid
 						AND
-					rds.entry_removed IS NULL
-						AND
-					( rd.size_actual IS NOT NULL AND rd.size_actual <= %[1]d )
-						AND
-					( rs.weight >= 0 OR rs.weight IS NULL )
-						AND
-					rae.aggregate_cid IS NULL
+					r.cid_v1 = pfparent.cid_v1
 			)
 				AND
 			-- give enough time for metadata/containing dags to trickle in too, allowing for outages
 			(
-				LEAST( ds.entry_created, d.entry_created ) <= ( NOW() - '%[2]s'::INTERVAL )
+				pf.entry_created <= ( NOW() - '%[2]s'::INTERVAL )
 					OR
 				EXISTS (
-					SELECT 42 FROM cargo.refs sr, cargo.dags sd, cargo.dag_sources sds
+					SELECT 42
+						FROM cargo.refs r, prefiltered pfchildren
 					WHERE
-						ds.cid_v1 = sr.cid_v1
+						pf.cid_v1 = r.cid_v1
 							AND
-						sr.ref_cid = sd.cid_v1
+						r.ref_cid = pfchildren.cid_v1
 							AND
-						sd.cid_v1 = sds.cid_v1
+						pf.srcid = pfchildren.srcid
 							AND
-						-- same srcid as "parent"
-						ds.srcid = sds.srcid
-							AND
-						LEAST( sds.entry_created, sd.entry_created ) <= ( NOW() - '%[2]s'::INTERVAL )
+						pfchildren.entry_created <= ( NOW() - '%[2]s'::INTERVAL )
 				)
 			)
-		`,
+	`,
 		targetMaxSize,
 		fmt.Sprintf("%d hours", settleDelayHours),
 	)
