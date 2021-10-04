@@ -87,9 +87,9 @@ CREATE TRIGGER trigger_dag_updated
 CREATE TABLE IF NOT EXISTS cargo.refs (
   cid_v1 TEXT NOT NULL REFERENCES cargo.dags ( cid_v1 ),
   ref_cid TEXT NOT NULL CONSTRAINT valid_ref_cid CHECK ( cargo.valid_cid_v1(ref_cid) OR SUBSTRING( ref_cid FROM 1 FOR 2 ) = 'Qm' ),
-  CONSTRAINT singleton_refs_record UNIQUE ( cid_v1, ref_cid )
+  CONSTRAINT singleton_by_ref UNIQUE ( ref_cid, cid_v1 )
 );
-CREATE INDEX IF NOT EXISTS refs_ref_cid ON cargo.refs ( ref_cid );
+CREATE INDEX IF NOT EXISTS refs_cid ON cargo.refs ( cid_v1 ) INCLUDE ( ref_cid );
 
 
 CREATE TABLE IF NOT EXISTS cargo.sources (
@@ -127,8 +127,9 @@ CREATE TABLE IF NOT EXISTS cargo.dag_sources (
   entry_last_exported TIMESTAMP WITH TIME ZONE,
   CONSTRAINT singleton_dag_source_record UNIQUE ( srcid, source_key )
 );
-CREATE INDEX IF NOT EXISTS dag_sources_cidv1_idx ON cargo.dag_sources ( cid_v1 );
+CREATE INDEX IF NOT EXISTS dag_sources_cidv1 ON cargo.dag_sources ( cid_v1 ) INCLUDE ( entry_removed );
 CREATE INDEX IF NOT EXISTS dag_sources_entry_removed ON cargo.dag_sources ( entry_removed );
+CREATE INDEX IF NOT EXISTS dag_sources_entry_not_removed ON cargo.dag_sources ( cid_v1 ) WHERE ( entry_removed IS NULL );
 CREATE INDEX IF NOT EXISTS dag_sources_entry_created ON cargo.dag_sources ( entry_created );
 CREATE INDEX IF NOT EXISTS dag_sources_redirect ON cargo.dag_sources (( details ->> '_lagging_pin_redirect_from_user' ));
 CREATE TRIGGER trigger_dag_source_insert
@@ -415,9 +416,10 @@ CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
   incomplete_sources AS (
     SELECT
         ml.srcid,
-        COUNT(*) AS count_missing,
+        COUNT(*) AS dags_missing,
         MIN( ml.entry_created ) AS oldest_missing,
-        MAX( ml.entry_created ) AS newest_missing
+        MAX( ml.entry_created ) AS newest_missing,
+        COUNT(*) FILTER (WHERE ml.cluster_pin_lag) AS pins_missing
       FROM cargo.dags_missing_list ml
     WHERE
       NOT ml.is_tombstone
@@ -428,39 +430,66 @@ CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
   SELECT
       s.project,
       s.srcid,
-      COALESCE( s.details ->> 'nickname', s.details ->> 'github' ) AS source_nick,
+      COALESCE( s.details ->> 'nickname', s.details ->> 'github', s.source ) AS source_nick,
       s.details ->> 'name' AS source_name,
       s.details ->> 'email' AS source_email,
       s.weight,
-      oldest_missing,
-      newest_missing,
-      si.count_missing
+      si.dags_missing,
+      si.oldest_missing,
+      si.newest_missing,
+      (100::numeric * si.pins_missing::numeric / si.dags_missing::numeric)::numeric(5,2) AS pct_not_pinned
     FROM incomplete_sources si
     JOIN cargo.sources s USING (srcid)
-  ORDER BY s.project, s.weight DESC NULLS FIRST, newest_missing DESC, srcid
+  ORDER BY s.project, s.weight DESC NULLS FIRST, si.newest_missing DESC, si.srcid
 );
 
-CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
+CREATE OR REPLACE VIEW cargo.dags_processed_summary AS (
   WITH
+    -- bend over backwards through set-subtraction, because again: NO FUCKING HINTS
+    deduped AS (
+
+      SELECT
+          ds.srcid,
+          ds.cid_v1,
+          d.size_actual,
+          ds.entry_created
+        FROM cargo.dag_sources ds
+        JOIN cargo.dags d
+          ON
+            ds.cid_v1 = d.cid_v1
+              AND
+            d.size_actual IS NOT NULL
+              AND
+            ds.entry_removed IS NULL
+
+    EXCEPT
+
+      SELECT
+          ds.srcid,
+          ds.cid_v1,
+          d.size_actual,
+          ds.entry_created
+        FROM cargo.dag_sources ds, cargo.dags d, cargo.refs r, cargo.dag_sources parentds
+      WHERE
+        ds.cid_v1 = d.cid_v1
+          AND
+        ds.cid_v1 = r.ref_cid
+          AND
+        r.cid_v1 = parentds.cid_v1
+          AND
+        parentds.srcid = ds.srcid
+          AND
+        parentds.entry_removed IS NULL
+
+    ),
     summary AS (
       SELECT
-        ds.srcid,
+        srcid,
         COUNT(*) AS count_total,
-        SUM(d.size_actual) AS bytes_total,
-        MIN(ds.entry_created) AS oldest_dag,
-        MAX(ds.entry_created) AS newest_dag
-      FROM cargo.dag_sources ds
-      JOIN cargo.dags d USING ( cid_v1 )
-      WHERE
-        d.size_actual IS NOT NULL AND d.size_actual <= 34000000000
-          AND
-        ds.entry_removed IS NULL
-          AND
-        -- exclude anything that is a member of something else from the same srcid
-        NOT EXISTS (
-          SELECT 42 FROM cargo.refs r, cargo.dag_sources rds
-          WHERE r.ref_cid = ds.cid_v1 AND r.cid_v1 = rds.cid_v1 AND rds.srcid = ds.srcid
-        )
+        SUM(size_actual) AS bytes_total,
+        MIN(entry_created) AS oldest_dag,
+        MAX(entry_created) AS newest_dag
+      FROM deduped
       GROUP BY srcid
     ),
     summary_unaggregated AS (
@@ -474,7 +503,7 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
       JOIN cargo.dags d USING ( cid_v1 )
       LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
       WHERE
-        d.size_actual IS NOT NULL AND d.size_actual <= 34000000000
+        d.size_actual IS NOT NULL
           AND
         ds.entry_removed IS NULL
           AND
@@ -484,34 +513,34 @@ CREATE OR REPLACE VIEW cargo.dag_sources_summary AS (
         NOT EXISTS (
           SELECT 42
             FROM cargo.refs r
-            JOIN cargo.dag_sources rds USING ( cid_v1 )
-            LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
+            JOIN cargo.dag_sources parentds USING ( cid_v1 )
+            LEFT JOIN cargo.aggregate_entries parentae USING ( cid_v1 )
           WHERE
             r.ref_cid = d.cid_v1
               AND
-            rds.srcid = ds.srcid
+            parentds.srcid = ds.srcid
               AND
-            rds.entry_removed IS NULL
+            parentds.entry_removed IS NULL
               AND
-            rae.aggregate_cid IS NULL
+            parentae.aggregate_cid IS NULL
         )
       GROUP BY srcid
     )
   SELECT
     s.project,
     su.srcid,
-    COALESCE( s.details ->> 'nickname', s.details ->> 'github' ) AS source_nick,
+    COALESCE( s.details ->> 'nickname', s.details ->> 'github', s.source ) AS source_nick,
     s.details ->> 'name' AS source_name,
     s.details ->> 'email' AS source_email,
     s.weight,
     su.count_total AS count_total,
-    unagg.count_total AS count_unaggregated,
-    unagg.oldest_dag AS oldest_unaggregated,
-    unagg.newest_dag AS newest_unaggregated,
     pg_size_pretty(su.bytes_total) AS size_total,
     ( su.bytes_total::NUMERIC / ( 1::BIGINT << 30 )::NUMERIC )::NUMERIC(99,3) AS GiB_total,
-    pg_size_pretty(unagg.bytes_total) AS size_unaggregated,
-    ( unagg.bytes_total::NUMERIC / ( 1::BIGINT << 30 )::NUMERIC )::NUMERIC(99,3) AS GiB_unaggregated
+    su.newest_dag AS most_recent_upload,
+    unagg.count_total AS count_unagg,
+    pg_size_pretty(unagg.bytes_total) AS size_unagg,
+    ( unagg.bytes_total::NUMERIC / ( 1::BIGINT << 30 )::NUMERIC )::NUMERIC(99,3) AS GiB_unagg,
+    unagg.oldest_dag AS oldest_unagg
   FROM summary su
   JOIN cargo.sources s USING ( srcid )
   LEFT JOIN summary_unaggregated unagg USING ( srcid )

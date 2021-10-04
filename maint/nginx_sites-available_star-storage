@@ -12,16 +12,7 @@ server {
         try_files $uri $uri/ =404;
     }
 
-    location /etc {
-        deny all;
-        return 404;
-    }
-
-    location /deal-cars {
-        include /var/www/cargo/etc/car_s3_redirects;
-    }
-
-    location /system-logs {
+    location ~ ^/(status/usage-summary)|(system-logs)/ {
         auth_basic "Ask ribasushi for credentials";
         auth_basic_user_file /var/www/cargo/etc/.htpasswd;
 
@@ -30,7 +21,17 @@ server {
         autoindex_format html;
         autoindex_localtime on;
         types {
-            text/plain log ndjson;
+            text/plain txt log ndjson csv;
         }
+        charset utf-8;
+    }
+
+    location /etc {
+        deny all;
+        return 404;
+    }
+
+    location /deal-cars {
+        include /var/www/cargo/etc/car_s3_redirects;
     }
 }

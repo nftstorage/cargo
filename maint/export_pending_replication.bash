@@ -3,10 +3,6 @@
 set -e
 set -o pipefail
 
-tmpfile=$( mktemp "$HOME/STATUS/.pending_replication.json.XXXXXX" )
-trap 'rm -f -- "$tmpfile"' INT TERM HUP EXIT
-chmod 644 "$tmpfile"
-
 psql -At service=cargo -c "
   SELECT JSON_BUILD_OBJECT(
     'export_timestamp', NOW(),
@@ -18,6 +14,4 @@ psql -At service=cargo -c "
     ) j )
   )" \
 | jq . \
-> "$tmpfile"
-
-mv "$tmpfile" "$HOME/STATUS/pending_replication.json"
+| "$( dirname "${BASH_SOURCE[0]}" )/atomic_cat.bash" "$HOME/STATUS/pending_replication.json"
