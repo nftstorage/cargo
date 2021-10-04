@@ -433,6 +433,7 @@ CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
       COALESCE( s.details ->> 'nickname', s.details ->> 'github', s.source ) AS source_nick,
       s.details ->> 'name' AS source_name,
       s.details ->> 'email' AS source_email,
+      s.details ->> 'github' AS source_ghkey,
       s.weight,
       si.dags_missing,
       si.oldest_missing,
@@ -503,7 +504,7 @@ CREATE OR REPLACE VIEW cargo.dags_processed_summary AS (
       JOIN cargo.dags d USING ( cid_v1 )
       LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
       WHERE
-        d.size_actual IS NOT NULL
+        d.size_actual IS NOT NULL AND d.size_actual <= 34000000000
           AND
         ds.entry_removed IS NULL
           AND
@@ -514,9 +515,12 @@ CREATE OR REPLACE VIEW cargo.dags_processed_summary AS (
           SELECT 42
             FROM cargo.refs r
             JOIN cargo.dag_sources parentds USING ( cid_v1 )
+            JOIN cargo.dags parentd USING ( cid_v1 )
             LEFT JOIN cargo.aggregate_entries parentae USING ( cid_v1 )
           WHERE
             r.ref_cid = d.cid_v1
+              AND
+            parentd.size_actual <= 34000000000
               AND
             parentds.srcid = ds.srcid
               AND
@@ -532,6 +536,7 @@ CREATE OR REPLACE VIEW cargo.dags_processed_summary AS (
     COALESCE( s.details ->> 'nickname', s.details ->> 'github', s.source ) AS source_nick,
     s.details ->> 'name' AS source_name,
     s.details ->> 'email' AS source_email,
+    s.details ->> 'github' AS source_ghkey,
     s.weight,
     su.count_total AS count_total,
     pg_size_pretty(su.bytes_total) AS size_total,
@@ -540,10 +545,14 @@ CREATE OR REPLACE VIEW cargo.dags_processed_summary AS (
     unagg.count_total AS count_unagg,
     pg_size_pretty(unagg.bytes_total) AS size_unagg,
     ( unagg.bytes_total::NUMERIC / ( 1::BIGINT << 30 )::NUMERIC )::NUMERIC(99,3) AS GiB_unagg,
-    unagg.oldest_dag AS oldest_unagg
+    unagg.oldest_dag AS oldest_unagg,
+    ms.dags_missing,
+    ms.oldest_missing,
+    ms.newest_missing
   FROM summary su
   JOIN cargo.sources s USING ( srcid )
   LEFT JOIN summary_unaggregated unagg USING ( srcid )
+  LEFT JOIN cargo.dags_missing_summary ms USING ( srcid )
   ORDER BY (unagg.bytes_total > 0 ), weight DESC NULLS FIRST, unagg.bytes_total DESC NULLS LAST, su.bytes_total DESC NULLS FIRST, s.project, su.srcid
 );
 
