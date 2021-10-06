@@ -67,7 +67,9 @@ CREATE TABLE IF NOT EXISTS cargo.dags (
   cid_v1 TEXT NOT NULL UNIQUE CONSTRAINT valid_cidv1 CHECK ( cargo.valid_cid_v1(cid_v1) ),
   size_actual BIGINT CONSTRAINT valid_actual_size CHECK ( size_actual >= 0 ),
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-  entry_last_updated TIMESTAMP WITH TIME ZONE NOT NULL
+  entry_analyzed TIMESTAMP WITH TIME ZONE,
+  entry_last_updated TIMESTAMP WITH TIME ZONE NOT NULL,
+  CONSTRAINT analyzis_markers CHECK ( ( size_actual IS NULL ) = ( entry_analyzed IS NULL ) )
 );
 CREATE INDEX IF NOT EXISTS dags_last_updated_idx ON cargo.dags ( entry_last_updated );
 CREATE INDEX IF NOT EXISTS dags_size_actual ON cargo.dags ( size_actual );
@@ -120,6 +122,7 @@ CREATE TABLE IF NOT EXISTS cargo.dag_sources (
   srcid BIGINT NOT NULL REFERENCES cargo.sources ( srcid ),
   cid_v1 TEXT NOT NULL REFERENCES cargo.dags ( cid_v1 ),
   source_key TEXT NOT NULL,
+  size_claimed BIGINT CONSTRAINT valid_climed_size CHECK ( size_claimed >= 0 ),
   details JSONB,
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
   entry_last_updated TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -364,6 +367,58 @@ CREATE OR REPLACE VIEW cargo.aggregate_summary AS (
     -- then order again by specific dag counts
     ( SELECT COUNT(*) FROM per_project_membership m WHERE a.aggregate_cid = m.aggregate_cid AND  m.project = 1 ) DESC NULLS LAST,
     ( SELECT COUNT(*) FROM cargo.aggregate_entries ae WHERE a.aggregate_cid = ae.aggregate_cid ) DESC NULLS LAST
+);
+
+CREATE OR REPLACE VIEW cargo.source_daily_summary AS (
+  SELECT
+    DATE_TRUNC( 'day', d.entry_analyzed ) AS cargo_retrieval_day,
+    srcid,
+    COUNT(*) AS daily_count,
+    SUM( d.size_actual ) AS daily_bytes,
+    MAX( EXTRACT( 'epoch' FROM d.entry_analyzed - ds.entry_created ) ) FILTER ( WHERE ds.entry_created < d.entry_analyzed )::BIGINT AS max_retrieval_lag_seconds,
+    MIN( EXTRACT( 'epoch' FROM d.entry_analyzed - ds.entry_created ) ) FILTER ( WHERE ds.entry_created < d.entry_analyzed )::BIGINT AS min_retrieval_lag_seconds
+    FROM cargo.dag_sources ds
+    JOIN cargo.dags d USING ( cid_v1 )
+  WHERE d.size_actual IS NOT NULL
+  GROUP BY cargo_retrieval_day, srcid
+);
+CREATE OR REPLACE VIEW cargo.source_daily_ranked_volume AS (
+  SELECT
+      sds.cargo_retrieval_day,
+      s.project,
+      RANK() OVER ( PARTITION BY sds.cargo_retrieval_day, s.project ORDER BY sds.daily_bytes DESC ) AS daily_rank,
+      sds.srcid,
+      sds.max_retrieval_lag_seconds,
+      sds.daily_count,
+      sds.daily_bytes,
+      COALESCE( s.details ->> 'nickname', s.details ->> 'github', s.source ) AS source_nick,
+      s.details ->> 'name' AS source_name,
+      s.details ->> 'email' AS source_email,
+      s.details ->> 'github' AS source_ghkey,
+      s.weight
+    FROM cargo.source_daily_summary sds
+    JOIN cargo.sources s USING ( srcid )
+  WHERE s.source != 'INTERNAL SYSTEM USER'
+  ORDER BY cargo_retrieval_day DESC, s.project, daily_rank, sds.srcid
+);
+CREATE OR REPLACE VIEW cargo.source_daily_ranked_count AS (
+  SELECT
+      sds.cargo_retrieval_day,
+      s.project,
+      RANK() OVER ( PARTITION BY sds.cargo_retrieval_day, s.project ORDER BY sds.daily_count DESC ) AS daily_rank,
+      sds.srcid,
+      sds.max_retrieval_lag_seconds,
+      sds.daily_count,
+      sds.daily_bytes,
+      COALESCE( s.details ->> 'nickname', s.details ->> 'github', s.source ) AS source_nick,
+      s.details ->> 'name' AS source_name,
+      s.details ->> 'email' AS source_email,
+      s.details ->> 'github' AS source_ghkey,
+      s.weight
+    FROM cargo.source_daily_summary sds
+    JOIN cargo.sources s USING ( srcid )
+  WHERE s.source != 'INTERNAL SYSTEM USER'
+  ORDER BY cargo_retrieval_day DESC, s.project, daily_rank, sds.srcid
 );
 
 CREATE OR REPLACE VIEW cargo.dags_missing_list AS (

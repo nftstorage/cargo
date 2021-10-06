@@ -16,7 +16,7 @@ type dagSourceEntryMeta struct {
 	Label         string       `json:"label,omitempty"`
 	UploadType    string       `json:"upload_type,omitempty"`
 	TokenUsed     *sourceToken `json:"token_used,omitempty"`
-	ClaimedSize   int64        `json:"claimed_size,omitempty,string"`
+	ClaimedSize   *int64       `json:"claimed_size,omitempty,string"`
 	PinnedAt      *time.Time   `json:"_pin_reported_at,omitempty"`
 	PinLagForUser string       `json:"_lagging_pin_redirect_from_user,omitempty"`
 }
@@ -64,7 +64,7 @@ type faunaQueryDagsResult struct {
 	Content struct {
 		CidString string `graphql:"cid"`
 		Created   time.Time
-		DagSize   int64
+		DagSize   *int64
 		Pins      struct {
 			Data []struct {
 				Status  string
@@ -320,8 +320,9 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 			err = db.QueryRow(
 				cctx.Context,
 				`
-				INSERT INTO cargo.dag_sources ( cid_v1, source_key, srcid, details, entry_created, entry_removed ) VALUES ( $1, $2, $3, $4, $5, $6 )
+				INSERT INTO cargo.dag_sources ( cid_v1, source_key, srcid, size_claimed, details, entry_created, entry_removed ) VALUES ( $1, $2, $3, $4, $5, $6, $7 )
 					ON CONFLICT ON CONSTRAINT singleton_dag_source_record DO UPDATE SET
+						size_claimed = EXCLUDED.size_claimed,
 						details = EXCLUDED.details,
 						entry_created = EXCLUDED.entry_created,
 						entry_removed = EXCLUDED.entry_removed
@@ -344,6 +345,7 @@ func getProjectDags(cctx *cli.Context, project faunaProject, availableDags, ownA
 				c.String(),
 				d.ID,
 				userLookup[d.User.UserID],
+				d.Content.DagSize,
 				entryMeta,
 				d.Created,
 				d.Deleted,

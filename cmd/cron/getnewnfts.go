@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -173,6 +174,7 @@ var getNewNftCids = &cli.Command{
 			cidNormStr := cidv1(cidOriginal).String()
 
 			entryCreated := time.Now()
+			var sizeClaimed *int64
 
 			if r.Metadata != nil {
 				m, castOk := r.Metadata.(map[string]interface{})
@@ -186,6 +188,17 @@ var getNewNftCids = &cli.Command{
 						return xerrors.Errorf("unexpected created time '%s'", ctime)
 					}
 					entryCreated = t
+				}
+
+				if size, sizeFound := m["size"]; sizeFound && size != nil {
+					s, err := strconv.ParseFloat(fmt.Sprintf("%v", size), 64)
+					if err != nil {
+						return xerrors.Errorf("unexpected claimed size '%s'", size)
+					}
+					if s > 0 {
+						si := int64(s)
+						sizeClaimed = &si
+					}
 				}
 			}
 
@@ -235,14 +248,16 @@ var getNewNftCids = &cli.Command{
 			_, err = db.Exec(
 				ctx,
 				`
-				INSERT INTO cargo.dag_sources ( cid_v1, source_key, srcid, entry_created ) VALUES ( $1, $2, $3, $4 )
+				INSERT INTO cargo.dag_sources ( cid_v1, source_key, srcid, entry_created, size_claimed ) VALUES ( $1, $2, $3, $4, $5 )
 					ON CONFLICT ON CONSTRAINT singleton_dag_source_record DO UPDATE SET
+						size_claimed = EXCLUDED.size_claimed,
 						entry_removed = NULL
 				`,
 				cidNormStr,
 				cidOriginal.String(),
 				knownSources[source],
 				entryCreated,
+				sizeClaimed,
 			)
 			if err != nil {
 				return err

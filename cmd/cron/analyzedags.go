@@ -459,7 +459,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 
 	_, err = tx.Exec(
 		ctx,
-		`UPDATE cargo.dags SET size_actual = $1 WHERE cid_v1 = $2`,
+		`UPDATE cargo.dags SET size_actual = $1, entry_analyzed = NOW() WHERE cid_v1 = $2`,
 		ds.Size,
 		cidv1(rootCid).String(),
 	)
