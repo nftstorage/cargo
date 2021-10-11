@@ -194,14 +194,10 @@ var aggregateDags = &cli.Command{
 			)
 		}()
 
-		if len(toAggRemaining) == 0 {
-			return nil
-		}
-
 		// first aggregation pass
 		// loop until we arrive at definitive lack of data
 		aggBundles := make([][]dagaggregator.AggregateDagEntry, 0, 128)
-		for {
+		for len(toAggRemaining) > 0 {
 			var runBytes uint64
 			curRoundSources := make(map[int64]struct{})
 
@@ -240,10 +236,11 @@ var aggregateDags = &cli.Command{
 				runBackwardsThroughRemaining(func(int) bool { return false })
 			}
 
-			// we can't find enough to make it worthwhile: close shop until next time
+			// we can't find enough to make it worthwhile for this bundle
+			// assemble the next one instead
 			if runBytes < targetMinSizeHard ||
 				(!forceTimeboxedAggregation && runBytes < targetMinSizeSoft) {
-				break
+				continue
 			}
 
 			// We have enough to aggregate!
