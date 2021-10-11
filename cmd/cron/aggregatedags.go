@@ -162,60 +162,20 @@ var aggregateDags = &cli.Command{
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
 
-		// the order is critical so that we can group same-source dags together
-		masterListSQL := eligibleForAggregationSQL(targetMaxSize, settleDelayHours) +
-			` ORDER BY weight DESC NULLS FIRST, srcid, size_actual DESC, cid_v1`
-
-		if captureAggregateCandidatesSnapshot {
-			mvName := `cargo.debug_aggregate_candidates_snapshot__` + time.Now().Format("2006_01_02__15_04_05")
-			_, err = db.Exec(ctx, fmt.Sprintf("CREATE MATERIALIZED VIEW %s AS\n%s", mvName, masterListSQL))
-			if err != nil {
-				return err
-			}
-			masterListSQL = `SELECT * FROM ` + mvName
-		}
-
-		rows, err := db.Query(ctx, masterListSQL)
+		toAggRemaining, forceTimeboxedAggregation, dagSourcesCount, err := aggregationCandidates(ctx)
 		if err != nil {
 			return err
 		}
 
-		statsDags := make(map[string]struct{})
-		statsSources := make(map[int64]struct{})
-		toAggRemaining := make([]pendingDag, 0, 256<<10)
-
-		var initialBytes uint64
-		var forceTimeboxedAggregation bool
-		forceCutoff := time.Now().Add(-1 * time.Hour * time.Duration(forceAgeHours))
-		for rows.Next() {
-			var pending pendingDag
-			var cidStr string
-
-			if err = rows.Scan(&pending.srcid, &cidStr, &pending.aggentry.UniqueBlockCumulativeSize, &pending.aggentry.UniqueBlockCount, &pending.sourceStamp, nil, nil, nil); err != nil {
-				return err
-			}
-
-			pending.aggentry.RootCid, err = cid.Parse(cidStr)
-			if err != nil {
-				return err
-			}
-
-			if forceAgeHours > 0 {
-				forceTimeboxedAggregation = forceTimeboxedAggregation || (pending.sourceStamp.Before(forceCutoff))
-			}
-
-			statsSources[pending.srcid] = struct{}{}
-			if _, existing := statsDags[pending.aggentry.RootCid.String()]; existing {
-				continue // register first occurrence of CID only, note: we record all sources on line above
-			}
-
-			statsDags[pending.aggentry.RootCid.String()] = struct{}{}
-			toAggRemaining = append(toAggRemaining, pending)
-			initialBytes += pending.aggentry.UniqueBlockCumulativeSize
+		var standaloneCandidateBytes uint64
+		for _, pending := range toAggRemaining {
+			standaloneCandidateBytes += pending.aggentry.UniqueBlockCumulativeSize
 		}
-		if err := rows.Err(); err != nil {
-			return err
-		}
+		standaloneCandidateCount := len(toAggRemaining)
+		log.Infof("%s standalone aggregation candidates found, projected to weigh %s bytes",
+			humanize.Comma(int64(standaloneCandidateCount)),
+			humanize.Comma(int64(standaloneCandidateBytes)),
+		)
 
 		stats := runningTotals{
 			newAggregatesTotal:       new(uint64),
@@ -225,18 +185,15 @@ var aggregateDags = &cli.Command{
 		var lastRoundAgg []dagaggregator.AggregateDagEntry
 		defer func() {
 			log.Infow("summary",
-				"initialCandidates", len(statsDags),
-				"uniqueCandidateSources", len(statsSources),
+				"initialCandidates", standaloneCandidateCount,
+				"uniqueCandidateSources", dagSourcesCount,
+				"forceTimeboxedAggregation", forceTimeboxedAggregation,
 				"aggregatesAssembled", *stats.newAggregatesTotal,
 				"dagsAggregatedStandalone", *stats.dagsAggregatedStandalone,
 				"dagsAggregatedTotal", *stats.dagsAggregatedTotal,
 			)
 		}()
 
-		log.Infof("%s standalone aggregation candidates found, projected to weigh %s bytes",
-			humanize.Comma(int64(len(toAggRemaining))),
-			humanize.Comma(int64(initialBytes)),
-		)
 		if len(toAggRemaining) == 0 {
 			return nil
 		}
@@ -425,7 +382,7 @@ var aggregateDags = &cli.Command{
 
 		log.Info("forcing time-boxed rehydration: retrieving list of preexisting already-packaged standalone dags")
 
-		rows, err = db.Query(
+		rows, err := db.Query(
 			ctx,
 			`
 			WITH dag_candidates AS (
@@ -476,6 +433,7 @@ var aggregateDags = &cli.Command{
 		if err != nil {
 			return err
 		}
+		defer rows.Close()
 
 		// run through *everything* attempting to pack things as tightly as possible
 		// ( up to 1 mil records )
@@ -505,11 +463,82 @@ var aggregateDags = &cli.Command{
 		if err := rows.Err(); err != nil {
 			return err
 		}
+		rows.Close()
 
 		// if it works - it works
 		_, err = reifyAggregateCars(cctx, stats, true, [][]dagaggregator.AggregateDagEntry{finalDitchAgg})
 		return err
 	},
+}
+
+func aggregationCandidates(ctx context.Context) ([]pendingDag, bool, int, error) {
+
+	// the order is critical so that we can group same-source dags together
+	masterListSQL := eligibleForAggregationSQL(targetMaxSize, settleDelayHours) +
+		` ORDER BY weight DESC NULLS FIRST, srcid, size_actual DESC, cid_v1`
+
+	if captureAggregateCandidatesSnapshot {
+		mvName := `cargo.debug_aggregate_candidates_snapshot__` + time.Now().Format("2006_01_02__15_04_05")
+		_, err := db.Exec(ctx, fmt.Sprintf("CREATE MATERIALIZED VIEW %s AS\n%s", mvName, masterListSQL))
+		if err != nil {
+			return nil, false, 0, err
+		}
+		masterListSQL = `SELECT * FROM ` + mvName
+	}
+
+	rotx, err := db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		return nil, false, 0, err
+	}
+	defer rotx.Rollback(context.Background()) //nolint:errcheck
+
+	// _, err = rotx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (2*time.Hour).Milliseconds()))
+	// if err != nil {
+	// 	return nil, 0, err
+	// }
+
+	rows, err := rotx.Query(ctx, masterListSQL)
+	if err != nil {
+		return nil, false, 0, err
+	}
+	defer rows.Close()
+
+	seenDags := cid.NewSet()
+	seenSources := make(map[int64]struct{})
+	pendingDags := make([]pendingDag, 0, 256<<10)
+
+	forceCutoff := time.Now().Add(-1 * time.Hour * time.Duration(forceAgeHours))
+	var forceTimeboxedAggregation bool
+
+	for rows.Next() {
+		var pending pendingDag
+		var cidStr string
+
+		if err = rows.Scan(&pending.srcid, &cidStr, &pending.aggentry.UniqueBlockCumulativeSize, &pending.aggentry.UniqueBlockCount, &pending.sourceStamp, nil, nil, nil); err != nil {
+			return nil, false, 0, err
+		}
+
+		pending.aggentry.RootCid, err = cid.Parse(cidStr)
+		if err != nil {
+			return nil, false, 0, err
+		}
+
+		if forceAgeHours > 0 {
+			forceTimeboxedAggregation = forceTimeboxedAggregation || (pending.sourceStamp.Before(forceCutoff))
+		}
+
+		seenSources[pending.srcid] = struct{}{}
+
+		// register first as-ordered occurrence of CID only
+		if seenDags.Visit(pending.aggentry.RootCid) {
+			pendingDags = append(pendingDags, pending)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, 0, err
+	}
+
+	return pendingDags, forceTimeboxedAggregation, len(seenSources), nil
 }
 
 func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) string {
@@ -697,6 +726,8 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
+
 	for rows.Next() {
 		var extraAgg dagaggregator.AggregateDagEntry
 		var cidStr string
@@ -712,6 +743,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	rows.Close()
 
 	ramBs := new(rambs.RamBs)
 	ramDs := merkledag.NewDAGService(blockservice.New(ramBs, exchangeoffline.Exchange(ramBs)))
