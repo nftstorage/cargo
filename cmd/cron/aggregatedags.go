@@ -53,9 +53,9 @@ var captureAggregateCandidatesSnapshot bool
 var carExportDir string
 
 type pendingDag struct {
-	aggentry    dagaggregator.AggregateDagEntry
-	srcid       int64
-	sourceStamp time.Time
+	aggentry  dagaggregator.AggregateDagEntry
+	srcid     int64
+	timeStamp time.Time
 }
 
 type aggregateResult struct {
@@ -511,7 +511,7 @@ func aggregationCandidates(ctx context.Context) ([]pendingDag, bool, int, error)
 		var pending pendingDag
 		var cidStr string
 
-		if err = rows.Scan(&pending.srcid, &cidStr, &pending.aggentry.UniqueBlockCumulativeSize, &pending.aggentry.UniqueBlockCount, &pending.sourceStamp, nil, nil, nil); err != nil {
+		if err = rows.Scan(&pending.srcid, &cidStr, &pending.aggentry.UniqueBlockCumulativeSize, &pending.aggentry.UniqueBlockCount, &pending.timeStamp, nil, nil, nil); err != nil {
 			return nil, false, 0, err
 		}
 
@@ -521,7 +521,7 @@ func aggregationCandidates(ctx context.Context) ([]pendingDag, bool, int, error)
 		}
 
 		if forceAgeHours > 0 {
-			forceTimeboxedAggregation = forceTimeboxedAggregation || (pending.sourceStamp.Before(forceCutoff))
+			forceTimeboxedAggregation = forceTimeboxedAggregation || (pending.timeStamp.Before(forceCutoff))
 		}
 
 		seenSources[pending.srcid] = struct{}{}
@@ -548,7 +548,7 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 						d.cid_v1,
 						d.size_actual,
 						( SELECT 1+COUNT(*) FROM cargo.refs r WHERE r.cid_v1 = d.cid_v1 ) AS node_count,
-						ds.entry_last_updated,
+						d.entry_analyzed,
 						ds.entry_created,
 						s.project,
 						s.weight
@@ -584,7 +584,7 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 				AND
 			-- give enough time for metadata/containing dags to trickle in too, allowing for outages
 			(
-				pf.entry_created <= ( NOW() - '%[2]s'::INTERVAL )
+				pf.entry_analyzed <= ( NOW() - '%[2]s'::INTERVAL )
 					OR
 				EXISTS (
 					SELECT 42
@@ -596,7 +596,7 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 							AND
 						pf.srcid = pfchildren.srcid
 							AND
-						pfchildren.entry_created <= ( NOW() - '%[2]s'::INTERVAL )
+						pfchildren.entry_analyzed <= ( NOW() - '%[2]s'::INTERVAL )
 				)
 			)
 	`,
