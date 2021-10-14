@@ -5,5 +5,6 @@ set -eu
 LOGDIR="$HOME/LOGS/$(date -u '+%Y-%m-%d')"
 mkdir -p "$LOGDIR"
 
-LOGFILE="$LOGDIR/$1"
-"${@:2}" >>"$LOGFILE" 2>&1
+export GOLOG_LOG_FMT=json
+
+"${@:2}" >>"$LOGDIR/$1" 2>&1
