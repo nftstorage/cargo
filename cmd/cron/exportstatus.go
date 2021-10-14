@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/hasura/go-graphql-client"
+	"github.com/jackc/pgx/v4"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
 )
@@ -85,7 +87,19 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 		)
 	}()
 
-	err := db.QueryRow(
+	rotx, err := db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		return err
+	}
+	defer rotx.Rollback(context.Background()) //nolint:errcheck
+
+	// update batches can be enormous
+	_, err = rotx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (3*time.Hour).Milliseconds()))
+	if err != nil {
+		return err
+	}
+
+	err = rotx.QueryRow(
 		ctx,
 		`
 		SELECT COUNT(*)
@@ -110,7 +124,7 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 		return nil
 	}
 
-	rows, err := db.Query(
+	rows, err := rotx.Query(
 		ctx,
 		`
 		SELECT DISTINCT -- multiple user uploading same cid need a single linkage update
@@ -222,6 +236,25 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 			if err := deals.Err(); err != nil {
 				return err
 			}
+		}
+
+		// FIXME - fauna can not possibly ingest this specific aggregate (5+ mil entries)
+		// just bail on it: safe given all entries are part of something else as well
+		/*
+			SELECT COUNT(*)
+				FROM cargo.aggregate_entries ae1
+				LEFT JOIN cargo.aggregate_entries ae2
+					ON
+						ae1.cid_v1 = ae2.cid_v1
+							AND
+						ae1.aggregate_cid != ae2.aggregate_cid
+			WHERE
+				ae1.aggregate_cid = 'bafybeifaow2p3qrzndvr4dzvms7fun3e3bijuwkwrmzou4zupatyennufy'
+					AND
+				ae2.aggregate_cid IS NULL
+		*/
+		if aCidStr == "bafybeifaow2p3qrzndvr4dzvms7fun3e3bijuwkwrmzou4zupatyennufy" {
+			continue
 		}
 
 		// either the aggregate cid changed or the batch is too big

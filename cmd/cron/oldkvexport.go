@@ -10,6 +10,7 @@ import (
 
 	"github.com/cloudflare/cloudflare-go"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/jackc/pgx/v4"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
 )
@@ -80,7 +81,19 @@ var oldExportStatus = &cli.Command{
 		}
 		log.Infof("updating status of %d entries", oldKvCountPending)
 
-		rows, err := db.Query(
+		rotx, err := db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
+		if err != nil {
+			return err
+		}
+		defer rotx.Rollback(context.Background()) //nolint:errcheck
+
+		// update batches can be enormous
+		_, err = rotx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (3*time.Hour).Milliseconds()))
+		if err != nil {
+			return err
+		}
+
+		rows, err := rotx.Query(
 			ctx,
 			`
 			SELECT
