@@ -47,19 +47,20 @@ var analyzeDags = &cli.Command{
 			Usage: "Remove ipfs daemon pin after successfully persisting dag stats",
 		},
 	},
-	Action: func(cctx *cli.Context) error {
+	Action: func(cctx *cli.Context) (err error) {
 
 		var ctxCloser func()
 		cctx.Context, ctxCloser = context.WithCancel(cctx.Context)
 		defer ctxCloser()
 
 		var res struct{ Keys map[string]ipfsapi.PinInfo }
-		if err := ipfsAPI(cctx).Request("pin/ls").Option("type", "recursive").Option("quiet", "true").Exec(cctx.Context, &res); err != nil {
+		if err = ipfsAPI(cctx).Request("pin/ls").Option("type", "recursive").Option("quiet", "true").Exec(cctx.Context, &res); err != nil {
 			return err
 		}
 		systemPins := make(map[cid.Cid]struct{}, len(res.Keys))
 		for cidStr := range res.Keys {
-			c, err := cid.Parse(cidStr)
+			var c cid.Cid
+			c, err = cid.Parse(cidStr)
 			if err != nil {
 				return err
 			}
@@ -110,7 +111,8 @@ var analyzeDags = &cli.Command{
 			if err = rows.Scan(&cidStr, &dagTooOld, &srcIsActive); err != nil {
 				return err
 			}
-			c, err := cid.Parse(cidStr)
+			var c cid.Cid
+			c, err = cid.Parse(cidStr)
 			if err != nil {
 				return err
 			}
@@ -134,7 +136,7 @@ var analyzeDags = &cli.Command{
 			}
 			// everything else can wait until the sweeper picks it up OR the source (re)activates
 		}
-		if err := rows.Err(); err != nil {
+		if err = rows.Err(); err != nil {
 			return err
 		}
 
@@ -156,6 +158,18 @@ var analyzeDags = &cli.Command{
 				"referencedBlocks", atomic.LoadUint64(total.refBlocks),
 				"bytes", atomic.LoadUint64(total.size),
 			)
+
+			// cargo.refs-involving query plans become *really* unstable
+			// when left for the auto-vacuum to work on
+			// just be aggressively explicit
+			if err == nil && atomic.LoadUint64(total.refBlocks) > 0 {
+				// twice for good measure
+				_, err = db.Exec(context.Background(), `VACUUM ANALYZE cargo.refs`)
+				if err == nil {
+					_, err = db.Exec(context.Background(), `VACUUM ANALYZE cargo.refs`)
+				}
+			}
+
 		}()
 
 		todoCount := uint64(len(dagsToDownloadAndProcess) + len(dagsToProcess))
