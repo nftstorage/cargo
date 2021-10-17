@@ -3,8 +3,6 @@ module github.com/nftstorage/dagcargo
 go 1.16
 
 require (
-	github.com/cloudflare/cloudflare-go v0.21.0
-	github.com/davecgh/go-spew v1.1.1
 	github.com/dustin/go-humanize v1.0.0
 	github.com/filecoin-project/go-address v0.0.6
 	github.com/filecoin-project/go-dagaggregator-unixfs v0.3.0

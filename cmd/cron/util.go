@@ -7,7 +7,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/cloudflare/cloudflare-go"
 	"github.com/filecoin-project/go-jsonrpc"
 	filabi "github.com/filecoin-project/go-state-types/abi"
 	lotusapi "github.com/filecoin-project/lotus/api"
@@ -87,23 +86,6 @@ func ipfsAPI(cctx *cli.Context) *ipfsapi.Shell {
 	s := ipfsapi.NewShell(cctx.String("ipfs-api"))
 	s.SetTimeout(time.Second * time.Duration(cctx.Uint("ipfs-api-timeout")))
 	return s
-}
-
-func cfAPI(cctx *cli.Context) (*cloudflare.API, error) {
-	bearer := cctx.String("cf-bearer-token")
-	if bearer == "" {
-		return nil, xerrors.New("config `cf-bearer-token` is not set")
-	}
-
-	acc := cctx.String("cf-account")
-	if acc == "" {
-		return nil, xerrors.New("config `cf-account` is not set")
-	}
-
-	return cloudflare.NewWithAPIToken(bearer,
-		cloudflare.UsingRetryPolicy(6, 2, 30),
-		cloudflare.UsingAccount(acc),
-	)
 }
 
 func lotusAPI(cctx *cli.Context) (api *lotusapi.FullNodeStruct, closer func(), err error) {
