@@ -13,7 +13,6 @@ GOLOG_LOG_FMT=json
 */5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_get-new-nfts.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron get-new-nfts
 */5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_push-metrics.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron push-metrics
 */5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_export-status.log.ndjson     $HOME/dagcargo/bin/dagcargo_cron export-status
-*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_export-status-cf.log.ndjson  $HOME/dagcargo/bin/dagcargo_cron old-export-status
 */5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_track-deals.log.ndjson       $HOME/dagcargo/bin/dagcargo_cron track-deals
 * * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_analyze-dags.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron analyze-dags --prepinned-only
 44 * * * *  $HOME/dagcargo/maint/log_and_run.bash cron_aggregate-dags.log.ndjson    $HOME/dagcargo/bin/dagcargo_cron aggregate-dags --skip-pinning --unpin-sources --export-dir ~/CAR_DATA

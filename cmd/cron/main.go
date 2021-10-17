@@ -251,7 +251,6 @@ func main() {
 			trackDeals,
 			exportStatus,
 			pushMetrics,
-			oldExportStatus,
 		},
 	}).RunContext(ctx, os.Args)
 

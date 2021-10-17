@@ -5,6 +5,7 @@ use strict;
 
 use DBIx::Class::Schema::Loader;
 use DBIx::Class::_Util 'sigwarn_silencer';
+use File::Basename 'dirname';
 use SQL::Translator;
 
 {
@@ -14,7 +15,7 @@ use SQL::Translator;
   __PACKAGE__->loader_options (
     naming => 'v8',
     db_schema => 'cargo',
-    exclude => qr/^(?: debug | legacy_nft_storage_export_rollup )/x,
+    exclude => qr/^(?: debug )/x,
   );
 }
 
@@ -45,7 +46,7 @@ my $trans = SQL::Translator->new(
         width => 0,
         height => 0,
         output_type      => 'svg',
-        out_file         => 'pg_schema_diagram.svg',
+        out_file         => dirname(__FILE__) . '/pg_schema_diagram.svg',
         show_constraints => 1,
         show_datatypes   => 1,
         show_indexes     => 0, # this doesn't actually work on the loader side

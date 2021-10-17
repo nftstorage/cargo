@@ -259,42 +259,6 @@ CREATE TABLE IF NOT EXISTS cargo.deal_events (
 CREATE INDEX IF NOT EXISTS deal_events_deal_id ON cargo.deal_events ( deal_id );
 
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS cargo.legacy_nft_storage_export_rollup AS (
-  SELECT DISTINCT
-      ds.source_key,
-      ds.cid_v1,
-      (
-        CASE WHEN
-          d.size_actual IS NULL
-            OR
-          ds.entry_removed IS NOT NULL
-            OR
-          s.weight < 0
-            OR
-          EXISTS (
-            SELECT 42 FROM cargo.aggregate_entries ae, cargo.deals de
-            WHERE ds.cid_v1 = ae.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status IN ( 'active' )
-          )
-        THEN 0 ELSE 1 END
-      ) AS queued,
-      ( SELECT COUNT(de.deal_id) FROM cargo.aggregate_entries ae, cargo.deals de WHERE ds.cid_v1 = ae.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status = 'published' ) AS published,
-      ( SELECT COUNT(de.deal_id) FROM cargo.aggregate_entries ae, cargo.deals de WHERE ds.cid_v1 = ae.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status = 'active' ) AS active,
-      ( SELECT COUNT(de.deal_id) FROM cargo.aggregate_entries ae, cargo.deals de WHERE ds.cid_v1 = ae.cid_v1 AND ae.aggregate_cid = de.aggregate_cid AND de.status = 'terminated' ) AS terminated,
-      d.entry_last_updated
-    FROM cargo.dag_sources ds
-    JOIN cargo.sources s USING ( srcid )
-    JOIN cargo.dags d USING ( cid_v1 )
-  WHERE
-    s.project = 2
-      AND
-    d.size_actual IS NOT NULL
-      AND
-    ( ds.entry_last_exported IS NULL OR d.entry_last_updated > ds.entry_last_exported )
-);
-CREATE INDEX IF NOT EXISTS legacy_nft_storage_export_rollup_cid_v1 ON cargo.legacy_nft_storage_export_rollup ( cid_v1 );
-CREATE INDEX IF NOT EXISTS legacy_nft_storage_export_rollup_source_key ON cargo.legacy_nft_storage_export_rollup ( source_key );
-
-
 CREATE OR REPLACE VIEW cargo.aggregate_summary AS (
   WITH
   per_project_membership AS (
