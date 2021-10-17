@@ -67,7 +67,7 @@ var analyzeDags = &cli.Command{
 			systemPins[cidv1(c)] = struct{}{}
 		}
 
-		rows, err := db.Query(
+		rows, err := cargoDb.Query(
 			cctx.Context,
 			`
 			SELECT
@@ -164,9 +164,9 @@ var analyzeDags = &cli.Command{
 			// just be aggressively explicit
 			if err == nil && atomic.LoadUint64(total.refBlocks) > 0 {
 				// twice for good measure
-				_, err = db.Exec(context.Background(), `VACUUM ANALYZE cargo.refs`)
+				_, err = cargoDb.Exec(context.Background(), `VACUUM ANALYZE cargo.refs`)
 				if err == nil {
-					_, err = db.Exec(context.Background(), `VACUUM ANALYZE cargo.refs`)
+					_, err = cargoDb.Exec(context.Background(), `VACUUM ANALYZE cargo.refs`)
 				}
 			}
 
@@ -417,7 +417,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 	}
 
 	currentState.Store(fmt.Sprintf("DbWrite size(%s) + refs(%s) %s", humanize.Comma(int64(ds.Size)), humanize.Comma(int64(len(refs))), rootCid.String()))
-	tx, err := db.Begin(ctx)
+	tx, err := cargoDb.Begin(ctx)
 	if err != nil {
 		return err
 	}

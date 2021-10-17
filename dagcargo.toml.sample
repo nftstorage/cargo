@@ -1,4 +1,4 @@
-pg-connstring = "postgres:///postgres?user=cargo&password=&host=/var/run/postgresql"
+cargo-pg-connstring = "postgres:///postgres?user=cargo&password=&host=/var/run/postgresql"
 
 lotus-api = "http://localhost:1234"
 

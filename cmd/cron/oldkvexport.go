@@ -61,14 +61,14 @@ var oldExportStatus = &cli.Command{
 		defer func() { log.Infow("summary", "updated", oldKvCountUpdated) }()
 
 		t0 := time.Now()
-		_, err := db.Exec(
+		_, err := cargoDb.Exec(
 			ctx,
 			`REFRESH MATERIALIZED VIEW cargo.legacy_nft_storage_export_rollup`,
 		)
 		if err != nil {
 			return err
 		}
-		err = db.QueryRow(
+		err = cargoDb.QueryRow(
 			ctx,
 			`SELECT COUNT(*) FROM cargo.legacy_nft_storage_export_rollup`,
 		).Scan(&oldKvCountPending)
@@ -81,7 +81,7 @@ var oldExportStatus = &cli.Command{
 		}
 		log.Infof("updating status of %d entries", oldKvCountPending)
 
-		rotx, err := db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
+		rotx, err := cargoDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
 		if err != nil {
 			return err
 		}
@@ -271,7 +271,7 @@ func cfUploadAndMarkUpdates(cctx *cli.Context, updStartTime time.Time, updates m
 		log.Panicf("unexpected bulk update response:n%s", spew.Sdump(r))
 	}
 
-	_, err = db.Exec(
+	_, err = cargoDb.Exec(
 		cctx.Context,
 		`
 		UPDATE cargo.dag_sources ds

@@ -973,7 +973,7 @@ func pushPrometheusMetrics(cctx *cli.Context) error {
 func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, error) {
 
 	t0 := time.Now()
-	tx, err := db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
+	tx, err := cargoDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return nil, err
 	}

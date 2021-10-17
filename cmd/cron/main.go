@@ -53,7 +53,7 @@ var globalFlags = []cli.Flag{
 		),
 	},
 	altsrc.NewStringFlag(&cli.StringFlag{
-		Name:  "pg-connstring",
+		Name:  "cargo-pg-connstring",
 		Value: "postgres:///postgres?user=cargo&password=&host=/var/run/postgresql",
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
@@ -149,8 +149,8 @@ func main() {
 
 	cleanup := func() {
 		cancel()
-		if db != nil {
-			db.Close()
+		if cargoDb != nil {
+			cargoDb.Close()
 		}
 		time.Sleep(250 * time.Millisecond) // give a bit of time for various parts to close
 	}
@@ -227,12 +227,12 @@ func main() {
 			}
 
 			log.Error(err)
-			if currentCmdLock != nil {
+			if currentCmdLock != nil || currentCmd == "get-new-dags" {
 				emitEndLogs(false)
 			}
 			cleanup()
 			os.Exit(1)
-		} else if currentCmdLock != nil {
+		} else if currentCmdLock != nil || currentCmd == "get-new-dags" {
 			emitEndLogs(true)
 		}
 	}()
@@ -302,9 +302,12 @@ var beforeCliSetup = func(cctx *cli.Context) error {
 			return nil
 		}
 
-		var err error
-		if currentCmdLock, err = fslock.Lock(os.TempDir(), "cargocron-"+firstCmdOccurrence); err != nil {
-			return err
+		// get-new-dags does its own locking for now
+		if firstCmdOccurrence != "get-new-dags" {
+			var err error
+			if currentCmdLock, err = fslock.Lock(os.TempDir(), "cargocron-"+firstCmdOccurrence); err != nil {
+				return err
+			}
 		}
 
 		currentCmd = firstCmdOccurrence
@@ -312,11 +315,11 @@ var beforeCliSetup = func(cctx *cli.Context) error {
 
 		// init the shared DB connection: do it here, since now we know the config *AND*
 		// we want the maxConn counter shared, singleton-style
-		dbConnCfg, err := pgxpool.ParseConfig(cctx.String("pg-connstring"))
+		dbConnCfg, err := pgxpool.ParseConfig(cctx.String("cargo-pg-connstring"))
 		if err != nil {
 			return err
 		}
-		db, err = pgxpool.ConnectConfig(cctx.Context, dbConnCfg)
+		cargoDb, err = pgxpool.ConnectConfig(cctx.Context, dbConnCfg)
 		if err != nil {
 			return err
 		}

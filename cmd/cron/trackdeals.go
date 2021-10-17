@@ -37,7 +37,7 @@ var trackDeals = &cli.Command{
 		clientLookup := make(map[filaddr.Address]filClient, 32)
 		knownDeals := make(map[int64]filDeal)
 		aggCidLookup := make(map[cid.Cid]cid.Cid)
-		rows, err := db.Query(
+		rows, err := cargoDb.Query(
 			ctx,
 			`
 			SELECT a.aggregate_cid, a.piece_cid, d.deal_id, d.status
@@ -133,7 +133,7 @@ var trackDeals = &cli.Command{
 				delete(knownDeals, dealID)
 			}
 
-			_, err = db.Exec(
+			_, err = cargoDb.Exec(
 				ctx,
 				`
 				INSERT INTO cargo.providers ( provider ) VALUES ( $1 )
@@ -162,7 +162,7 @@ var trackDeals = &cli.Command{
 					fc.dataCapRemaining = &z
 				}
 
-				_, err = db.Exec(
+				_, err = cargoDb.Exec(
 					ctx,
 					`
 					INSERT INTO cargo.clients ( client, filp_available ) VALUES ( $1, $2 )
@@ -210,7 +210,7 @@ var trackDeals = &cli.Command{
 				}
 			}
 
-			_, err = db.Exec(
+			_, err = cargoDb.Exec(
 				ctx,
 				`
 				INSERT INTO cargo.deals ( aggregate_cid, client, provider, deal_id, start_epoch, end_epoch, status, status_meta, sector_start_epoch )
@@ -246,7 +246,7 @@ var trackDeals = &cli.Command{
 			toFail = append(toFail, dID)
 		}
 		if len(toFail) > 0 {
-			_, err = db.Exec(
+			_, err = cargoDb.Exec(
 				ctx,
 				`
 				UPDATE cargo.deals SET

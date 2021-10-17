@@ -379,7 +379,7 @@ var aggregateDags = &cli.Command{
 
 		log.Info("forcing time-boxed rehydration: retrieving list of preexisting already-packaged standalone dags")
 
-		rows, err := db.Query(
+		rows, err := cargoDb.Query(
 			ctx,
 			`
 			WITH dag_candidates AS (
@@ -476,14 +476,14 @@ func aggregationCandidates(ctx context.Context) ([]pendingDag, bool, int, error)
 
 	if captureAggregateCandidatesSnapshot {
 		mvName := `cargo.debug_aggregate_candidates_snapshot__` + time.Now().Format("2006_01_02__15_04_05")
-		_, err := db.Exec(ctx, fmt.Sprintf("CREATE MATERIALIZED VIEW %s AS\n%s", mvName, masterListSQL))
+		_, err := cargoDb.Exec(ctx, fmt.Sprintf("CREATE MATERIALIZED VIEW %s AS\n%s", mvName, masterListSQL))
 		if err != nil {
 			return nil, false, 0, err
 		}
 		masterListSQL = `SELECT * FROM ` + mvName
 	}
 
-	rotx, err := db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
+	rotx, err := cargoDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return nil, false, 0, err
 	}
@@ -703,7 +703,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	}
 
 	// Add all the "free" parts that happen to be included via larger dags
-	rows, err := db.Query(
+	rows, err := cargoDb.Query(
 		ctx,
 		`
 		SELECT
@@ -968,7 +968,7 @@ watchdog:
 	}
 	root := res.carRoot.String()
 
-	tx, err := db.Begin(ctx)
+	tx, err := cargoDb.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1086,7 +1086,7 @@ func notifyBidBot(cctx *cli.Context, reqData bidBotRequest) error {
 
 	//
 	// FIXME - bidbot is not concurrency-friendly at present, hold a pg-side lock
-	tx, err := db.Begin(cctx.Context)
+	tx, err := cargoDb.Begin(cctx.Context)
 	if err != nil {
 		return xerrors.Errorf("unable to open workaround-lock-transaction: %w", err)
 	}

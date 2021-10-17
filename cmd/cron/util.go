@@ -25,23 +25,14 @@ import (
 	"golang.org/x/xerrors"
 )
 
-var projects = map[string]string{
-	"0": "staging.web3.storage",
-	"1": "web3.storage",
-	"2": "nft.storage",
-}
-var faunaProjects = []faunaProject{
-	{id: 0, label: "w3s-stage"},
-	{id: 1, label: "w3s-prod"},
-}
-
-type faunaProject struct {
-	id    int
-	label string
-}
-
 var (
-	db *pgxpool.Pool // singleton populated in urfaveCLIs Before()
+	projects = map[string]string{
+		"0": "staging.web3.storage",
+		"1": "web3.storage",
+		"2": "nft.storage",
+	}
+
+	cargoDb *pgxpool.Pool // singleton populated in urfaveCLIs Before()
 
 	log          = logging.Logger(fmt.Sprintf("dagcargo-cron(%d)", os.Getpid()))
 	isTerm       = isatty.IsTerminal(os.Stderr.Fd())
@@ -62,7 +53,7 @@ func cidv1(c cid.Cid) cid.Cid {
 func cidListFromQuery(ctx context.Context, sql string, args ...interface{}) (map[cid.Cid]struct{}, error) {
 	cidList := make(map[cid.Cid]struct{}, 1<<10)
 
-	rows, err := db.Query(
+	rows, err := cargoDb.Query(
 		ctx,
 		sql,
 		args...,

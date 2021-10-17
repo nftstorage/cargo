@@ -49,7 +49,7 @@ var getNewNftCids = &cli.Command{
 
 		knownSources := make(map[string]int64, bufPresize)
 		projectNftStorage := 2
-		rows, err := db.Query(
+		rows, err := cargoDb.Query(
 			ctx,
 			`SELECT srcid, source FROM cargo.sources WHERE project = $1 AND details IS NOT NULL`,
 			projectNftStorage,
@@ -70,7 +70,7 @@ var getNewNftCids = &cli.Command{
 		}
 
 		initiallyInDb := make(map[[2]string]struct{}, bufPresize)
-		rows, err = db.Query(
+		rows, err = cargoDb.Query(
 			ctx,
 			`SELECT ds.source_key, s.source
 				FROM cargo.dag_sources ds
@@ -95,7 +95,7 @@ var getNewNftCids = &cli.Command{
 		}
 
 		ownAggregates := make(map[string]struct{}, 1<<10)
-		rows, err = db.Query(
+		rows, err = cargoDb.Query(
 			ctx,
 			`SELECT aggregate_cid FROM cargo.aggregates`,
 		)
@@ -202,7 +202,7 @@ var getNewNftCids = &cli.Command{
 				}
 			}
 
-			_, err = db.Exec(
+			_, err = cargoDb.Exec(
 				ctx,
 				`
 				INSERT INTO cargo.dags ( cid_v1, entry_created ) VALUES ( $1, $2 )
@@ -225,7 +225,7 @@ var getNewNftCids = &cli.Command{
 				}
 
 				var srcid int64
-				err = db.QueryRow(
+				err = cargoDb.QueryRow(
 					ctx,
 					`
 					INSERT INTO cargo.sources ( project, source, entry_created, details ) VALUES ( $1, $2, $3, $4 )
@@ -245,7 +245,7 @@ var getNewNftCids = &cli.Command{
 				knownSources[source] = srcid
 			}
 
-			_, err = db.Exec(
+			_, err = cargoDb.Exec(
 				ctx,
 				`
 				INSERT INTO cargo.dag_sources ( cid_v1, source_key, srcid, entry_created, size_claimed ) VALUES ( $1, $2, $3, $4, $5 )
@@ -271,7 +271,7 @@ var getNewNftCids = &cli.Command{
 		removed = len(initiallyInDb)
 		if removed > 0 {
 			for k := range initiallyInDb {
-				if _, err = db.Exec(
+				if _, err = cargoDb.Exec(
 					ctx,
 					`
 					UPDATE cargo.dag_sources ds

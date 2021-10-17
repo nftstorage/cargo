@@ -87,7 +87,7 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 		)
 	}()
 
-	rotx, err := db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
+	rotx, err := cargoDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return err
 	}
@@ -188,7 +188,7 @@ func updateDealStates(cctx *cli.Context, project faunaProject) error {
 			}
 			countAggregates++
 
-			deals, err := db.Query(
+			deals, err := cargoDb.Query(
 				ctx,
 				`
 				SELECT dl.deal_id, dl.provider, dl.start_time, dl.end_time, dl.status, dl.status_meta
@@ -298,7 +298,7 @@ func faunaUploadEntriesAndMarkUpdated(
 	markCidDone := make([]string, 0, len(entries))
 	defer func() {
 		if len(markCidDone) > 0 {
-			_, markErr := db.Exec(
+			_, markErr := cargoDb.Exec(
 				ctx,
 				`
 				UPDATE cargo.dag_sources ds
