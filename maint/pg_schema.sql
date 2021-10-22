@@ -97,14 +97,14 @@ CREATE INDEX IF NOT EXISTS refs_cid ON cargo.refs ( cid_v1 ) INCLUDE ( ref_cid )
 CREATE TABLE IF NOT EXISTS cargo.sources (
   srcid BIGSERIAL NOT NULL UNIQUE,
   project INTEGER NOT NULL,
-  source TEXT NOT NULL,
+  source_label TEXT NOT NULL,
   weight INTEGER CONSTRAINT weight_range CHECK ( weight BETWEEN -99 AND 99 ),
   details JSONB,
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL,
-  CONSTRAINT singleton_source_record UNIQUE ( project, source )
+  CONSTRAINT singleton_source_record UNIQUE ( project, source_label )
 );
 CREATE INDEX IF NOT EXISTS sources_weight ON cargo.sources ( weight );
-CREATE INDEX IF NOT EXISTS sources_source ON cargo.sources ( source );
+CREATE INDEX IF NOT EXISTS sources_source_label ON cargo.sources ( source_label );
 CREATE TRIGGER trigger_dag_update_on_related_source_insert_delete
   AFTER INSERT OR DELETE ON cargo.sources
   FOR EACH ROW
@@ -134,7 +134,7 @@ CREATE INDEX IF NOT EXISTS dag_sources_cidv1 ON cargo.dag_sources ( cid_v1 ) INC
 CREATE INDEX IF NOT EXISTS dag_sources_entry_removed ON cargo.dag_sources ( entry_removed );
 CREATE INDEX IF NOT EXISTS dag_sources_entry_not_removed ON cargo.dag_sources ( cid_v1 ) WHERE ( entry_removed IS NULL );
 CREATE INDEX IF NOT EXISTS dag_sources_entry_created ON cargo.dag_sources ( entry_created );
-CREATE INDEX IF NOT EXISTS dag_sources_redirect ON cargo.dag_sources (( details ->> '_lagging_pin_redirect_from_user' ));
+CREATE INDEX IF NOT EXISTS dag_sources_pintime ON cargo.dag_sources ( (details ->> 'pin_reported_at') );
 CREATE TRIGGER trigger_dag_source_insert
   BEFORE INSERT ON cargo.dag_sources
   FOR EACH ROW
@@ -148,17 +148,14 @@ CREATE TRIGGER trigger_dag_update_on_new_sources
 CREATE TRIGGER trigger_dag_source_updated
   BEFORE UPDATE ON cargo.dag_sources
   FOR EACH ROW
-  WHEN (OLD IS DISTINCT FROM NEW)
+  -- *always* trigger the update tstamp bump so thath w "front-run" the remote source timestamp
+  -- WHEN (OLD IS DISTINCT FROM NEW)
   EXECUTE PROCEDURE cargo.update_entry_timestamp()
 ;
 CREATE TRIGGER trigger_dag_update_on_related_sources
-  AFTER UPDATE OF source_key, entry_removed ON cargo.dag_sources
+  AFTER UPDATE OF entry_removed ON cargo.dag_sources
   FOR EACH ROW
-  WHEN (
-    OLD.source_key != NEW.source_key
-      OR
-    OLD.entry_removed IS DISTINCT FROM NEW.entry_removed
-  )
+  WHEN ( OLD.entry_removed IS DISTINCT FROM NEW.entry_removed )
   EXECUTE PROCEDURE cargo.update_parent_dag_timestamp()
 ;
 
@@ -228,7 +225,13 @@ CREATE TRIGGER trigger_dag_update_on_related_deal_insert_delete
 CREATE TRIGGER trigger_deal_updated
   BEFORE UPDATE ON cargo.deals
   FOR EACH ROW
-  WHEN (OLD IS DISTINCT FROM NEW)
+  WHEN (
+    OLD.status IS DISTINCT FROM NEW.status
+      OR
+    OLD.status_meta IS DISTINCT FROM NEW.status_meta
+      OR
+    OLD.sector_start_epoch IS DISTINCT FROM NEW.sector_start_epoch
+  )
   EXECUTE PROCEDURE cargo.update_entry_timestamp()
 ;
 CREATE TRIGGER trigger_dag_update_on_related_deal_change
@@ -245,7 +248,7 @@ CREATE TRIGGER trigger_basic_deal_history_on_insert
 CREATE TRIGGER trigger_basic_deal_history_on_update
   AFTER UPDATE ON cargo.deals
   FOR EACH ROW
-  WHEN (OLD IS DISTINCT FROM NEW)
+  WHEN (OLD.status IS DISTINCT FROM NEW.status)
   EXECUTE PROCEDURE cargo.record_deal_event()
 ;
 
@@ -355,14 +358,13 @@ CREATE OR REPLACE VIEW cargo.source_daily_ranked_volume AS (
       sds.max_retrieval_lag_seconds,
       sds.daily_count,
       sds.daily_bytes,
-      COALESCE( s.details ->> 'nickname', s.details ->> 'github', s.source ) AS source_nick,
+      COALESCE( s.details ->> 'nickname', s.details ->> 'github_id', s.source_label ) AS source_nick,
       s.details ->> 'name' AS source_name,
       s.details ->> 'email' AS source_email,
-      s.details ->> 'github' AS source_ghkey,
+      s.details ->> 'github_id' AS source_ghkey,
       s.weight
     FROM cargo.source_daily_summary sds
     JOIN cargo.sources s USING ( srcid )
-  WHERE s.source != 'INTERNAL SYSTEM USER'
   ORDER BY cargo_retrieval_day DESC, s.project, daily_rank, sds.srcid
 );
 CREATE OR REPLACE VIEW cargo.source_daily_ranked_count AS (
@@ -374,22 +376,20 @@ CREATE OR REPLACE VIEW cargo.source_daily_ranked_count AS (
       sds.max_retrieval_lag_seconds,
       sds.daily_count,
       sds.daily_bytes,
-      COALESCE( s.details ->> 'nickname', s.details ->> 'github', s.source ) AS source_nick,
+      COALESCE( s.details ->> 'nickname', s.details ->> 'github_id', s.source_label ) AS source_nick,
       s.details ->> 'name' AS source_name,
       s.details ->> 'email' AS source_email,
-      s.details ->> 'github' AS source_ghkey,
+      s.details ->> 'github_id' AS source_ghkey,
       s.weight
     FROM cargo.source_daily_summary sds
     JOIN cargo.sources s USING ( srcid )
-  WHERE s.source != 'INTERNAL SYSTEM USER'
   ORDER BY cargo_retrieval_day DESC, s.project, daily_rank, sds.srcid
 );
 
 CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
 
-  SELECT u.*, s.project, COALESCE( s.weight, 100 ) AS weight
+  SELECT m.*, s.project, COALESCE( s.weight, 100 ) AS weight
     FROM (
-
       SELECT
           ds.cid_v1,
           ds.source_key,
@@ -397,37 +397,15 @@ CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
           ds.entry_created,
           ds.entry_removed,
           ( ds.entry_removed IS NOT NULL ) AS is_tombstone,
-          false AS cluster_pin_lag,
+          ( ds.details->'pin_reported_at' IS NULL ) AS cluster_pin_lag,
           ds.details
         FROM cargo.dag_sources ds
         JOIN cargo.dags d USING ( cid_v1 )
       WHERE
         d.size_actual IS NULL
-          AND
-        ds.details->>'_lagging_pin_redirect_from_user' IS NULL
-
-            UNION ALL
-
-      SELECT
-          ds.cid_v1,
-          ds.source_key,
-          ( SELECT srcid FROM cargo.sources ss WHERE ss.project = s.project AND ss.source = ds.details->>'_lagging_pin_redirect_from_user') AS srcid,
-          ds.entry_created,
-          ds.entry_removed,
-          ( ds.entry_removed IS NOT NULL ) AS is_tombstone,
-          true AS cluster_pin_lag,
-          ds.details
-        FROM cargo.dag_sources ds
-        JOIN cargo.dags d USING ( cid_v1 )
-        JOIN cargo.sources s USING ( srcid )
-      WHERE
-        d.size_actual IS NULL
-          AND
-        ds.details->>'_lagging_pin_redirect_from_user' IS NOT NULL
-
-    ) u
+    ) m
     JOIN cargo.sources s USING ( srcid )
-  ORDER BY s.project, u.srcid, u.entry_created DESC
+  ORDER BY s.project, m.srcid, m.entry_created DESC
 );
 
 CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
@@ -449,10 +427,10 @@ CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
   SELECT
       s.project,
       s.srcid,
-      COALESCE( s.details ->> 'nickname', s.details ->> 'github', s.source ) AS source_nick,
+      COALESCE( s.details ->> 'nickname', s.details ->> 'github_id', s.source_label ) AS source_nick,
       s.details ->> 'name' AS source_name,
       s.details ->> 'email' AS source_email,
-      s.details ->> 'github' AS source_ghkey,
+      s.details ->> 'github_id' AS source_ghkey,
       s.weight,
       si.dags_missing,
       si.oldest_missing,
@@ -552,10 +530,10 @@ CREATE OR REPLACE VIEW cargo.dags_processed_summary AS (
   SELECT
     s.project,
     su.srcid,
-    COALESCE( s.details ->> 'nickname', s.details ->> 'github', s.source ) AS source_nick,
+    COALESCE( s.details ->> 'nickname', s.details ->> 'github_id', s.source_label ) AS source_nick,
     s.details ->> 'name' AS source_name,
     s.details ->> 'email' AS source_email,
-    s.details ->> 'github' AS source_ghkey,
+    s.details ->> 'github_id' AS source_ghkey,
     s.weight,
     su.count_total AS count_total,
     pg_size_pretty(su.bytes_total) AS size_total,

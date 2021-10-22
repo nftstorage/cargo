@@ -2,39 +2,58 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/ipfs/go-cid"
 	fslock "github.com/ipfs/go-fs-lock"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/xerrors"
 )
 
-var sysUserSource = "INTERNAL SYSTEM USER"
-var sysUserCreateTime, _ = time.Parse("2006-01-02", "2021-08-01")
+type dagSource struct {
+	SourceID    int64
+	Project     int
+	CreatedAt   time.Time
+	SourceLabel string
+	Details     string
+	Weight      *int
+}
+type dagSourceEntry struct {
+	SourceID    *int64
+	CidV1Str    string
+	SourceKey   string
+	SizeClaimed *int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	RemovedAt   *time.Time
+	Details     string
+
+	sourceLabel string
+	cidV1       cid.Cid
+}
 
 // these two are the structs placed in the corresponding `details` JSONB
-type dagSourceEntryMeta struct {
-	OriginalCid   string       `json:"original_cid"`
-	Label         string       `json:"label,omitempty"`
-	UploadType    string       `json:"upload_type,omitempty"`
-	TokenUsed     *sourceToken `json:"token_used,omitempty"`
-	ClaimedSize   *int64       `json:"claimed_size,omitempty,string"`
-	PinnedAt      *time.Time   `json:"_pin_reported_at,omitempty"`
-	PinLagForUser string       `json:"_lagging_pin_redirect_from_user,omitempty"`
-}
 type dagSourceMeta struct {
-	Github        string `json:"github,omitempty"`
-	Name          string `json:"name,omitempty"`
-	Email         string `json:"email,omitempty"`
-	PublicAddress string `json:"public_address,omitempty"`
-	Issuer        string `json:"issuer,omitempty"`
-	Picture       string `json:"picture,omitempty"`
-	UsedStorage   int64  `json:"storage_used,omitempty,string"`
+	GithubID      json.Number `json:"github_id,omitempty" graphql:"github"`
+	Name          string      `json:"name,omitempty"`
+	Email         string      `json:"email,omitempty"`
+	PublicAddress string      `json:"public_address,omitempty"` // FIXME why do we have this? SELECT * FROM public.user WHERE public_address IS NOT NULL AND public_address != SUBSTRING( magic_link_id, 10 )
+	MagicLinkID   string      `json:"magic_link_id,omitempty" graphql:"issuer"`
+	Picture       string      `json:"picture,omitempty"`
+	UsedStorage   int64       `json:"storage_used,omitempty,string"`
+	Nickname      string      `json:"nickname,omitempty" graphql:""`
 }
-
+type dagSourceEntryMeta struct {
+	OriginalCid string       `json:"original_cid"`
+	Label       string       `json:"label,omitempty"`
+	UploadType  string       `json:"upload_type,omitempty"`
+	TokenUsed   *sourceToken `json:"token_used,omitempty"`
+	PinnedAt    *time.Time   `json:"pin_reported_at,omitempty"`
+}
 type sourceToken struct {
 	ID    string `json:"id,omitempty" graphql:"_id"`
 	Label string `json:"label,omitempty" graphql:"name"`
@@ -71,14 +90,16 @@ var getNewDags = &cli.Command{
 			requestedProjects[v] = struct{}{}
 		}
 
+		log.Infow(fmt.Sprintf("=== BEGIN '%s' run", currentCmd))
+
 		ctx, closer := context.WithCancel(cctx.Context)
 		defer closer()
 
 		// Sometimes we end up pinning something before cluster reports it as such
 		// ( or we had something from a different source )
-		availableCids, err := cidListFromQuery(
+		knownCids, err := cidListFromQuery(
 			ctx,
-			`SELECT cid_v1 FROM cargo.dags WHERE size_actual IS NOT NULL`,
+			`SELECT cid_v1 FROM cargo.dags`,
 		)
 		if err != nil {
 			return err
@@ -93,10 +114,27 @@ var getNewDags = &cli.Command{
 			return err
 		}
 
+		log.Infow("pre-selected", "knownCids", len(knownCids), "aggregateCids", len(ownAggregates))
 		cutoffTime := time.Now().Add(time.Hour * -24 * time.Duration(cctx.Uint("skip-entries-aged")))
 
 		var wg sync.WaitGroup
 		errs := make(chan error, 256)
+
+		for i := range pgProjects {
+			p := pgProjects[i]
+			if _, requested := requestedProjects[p.id]; !requested {
+				continue
+			}
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := getPgDags(cctx, p, cutoffTime, knownCids, ownAggregates)
+				if err != nil {
+					errs <- err
+				}
+			}()
+		}
 
 		for i := range faunaProjects {
 			p := faunaProjects[i]
@@ -107,7 +145,7 @@ var getNewDags = &cli.Command{
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				err := getFaunaDags(cctx, p, cutoffTime, availableCids, ownAggregates)
+				err := getFaunaDags(cctx, p, cutoffTime, knownCids, ownAggregates)
 				if err != nil {
 					errs <- err
 				}
@@ -116,37 +154,6 @@ var getNewDags = &cli.Command{
 
 		wg.Wait()
 		close(errs)
-		if err := <-errs; err != nil {
-			return err
-		}
-
-		// we got that far without an error: all good
-		// cleanup all records of the sysusers that are now properly attached to the original source
-		// (if any )
-		_, err = cargoDb.Exec(
-			cctx.Context,
-			`
-			DELETE FROM cargo.dag_sources WHERE ( srcid, source_key ) IN (
-				SELECT ds.srcid, ds.source_key
-					FROM cargo.dag_sources ds
-					JOIN cargo.sources s
-						ON
-							ds.srcid = s.srcid
-								AND
-							s.source = $1
-					JOIN cargo.dag_sources subds
-						ON ds.cid_v1 = subds.cid_v1
-					JOIN cargo.sources subs
-						ON
-							subds.srcid = subs.srcid
-								AND
-							subs.project = s.project
-								AND
-							subs.source = ds.details->>'_lagging_pin_redirect_from_user'
-			)
-			`,
-			sysUserSource,
-		)
-		return err
+		return <-errs
 	},
 }

@@ -183,6 +183,8 @@ var metricsList = []cargoMetric{
 						d.size_actual IS NULL
 							AND
 						ds.entry_removed IS NULL
+							AND
+						ds.details -> 'pin_reported_at' IS NOT NULL
 					GROUP BY s.project
 				)
 			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
@@ -225,7 +227,7 @@ var metricsList = []cargoMetric{
 		query: `
 			WITH
 				inactive_sources AS (
-					SELECT * FROM cargo.sources WHERE weight < 0 AND source != 'INTERNAL SYSTEM USER'
+					SELECT * FROM cargo.sources WHERE weight < 0
 				),
 				q AS (
 					SELECT s.project, COUNT(*) val
@@ -285,13 +287,12 @@ var metricsList = []cargoMetric{
 		help: "Amount of known best-effort-deduplicated bytes stored per project",
 		query: `
 			WITH
-				active_sources AS (
-					SELECT * FROM cargo.sources WHERE weight >= 0 OR weight IS NULL
-				),
 				q AS (
 					SELECT s.project, SUM(d.size_actual) val
-						FROM active_sources s, cargo.dag_sources ds, cargo.dags d
+						FROM cargo.sources s, cargo.dag_sources ds, cargo.dags d
 					WHERE
+						( s.weight >= 0 OR s.weight IS NULL )
+							AND
 						s.srcid = ds.srcid
 							AND
 						ds.cid_v1 = d.cid_v1
@@ -353,15 +354,14 @@ var metricsList = []cargoMetric{
 		help: "Amount of known best-effort-deduplicated bytes retrieved and then marked deleted per project",
 		query: `
 			WITH
-				active_sources AS (
-					SELECT * FROM cargo.sources WHERE weight >= 0 OR weight IS NULL
-				),
 				q AS (
 					SELECT s.project, SUM(d.size_actual) val
-						FROM active_sources s
+						FROM cargo.sources s
 						JOIN cargo.dag_sources ds USING ( srcid )
 						JOIN cargo.dags d USING ( cid_v1 )
 					WHERE
+						( s.weight >= 0 OR s.weight IS NULL )
+							AND
 						d.size_actual IS NOT NULL
 							AND
 						ds.entry_removed IS NOT NULL
@@ -454,7 +454,7 @@ var metricsList = []cargoMetric{
 		query: `
 			WITH
 				inactive_sources AS (
-					SELECT * FROM cargo.sources WHERE weight < 0 AND source != 'INTERNAL SYSTEM USER'
+					SELECT * FROM cargo.sources WHERE weight < 0
 				),
 				q AS (
 					SELECT s.project, SUM(d.size_actual) val

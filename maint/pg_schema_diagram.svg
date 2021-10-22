@@ -159,7 +159,7 @@
 <polyline fill="none" stroke="black" points="3,-594.5 319,-594.5 "/>
 <text text-anchor="start" x="11" y="-579.3" font-family="Times,serif" font-size="14.00">&#45; srcid bigint [U]</text>
 <text text-anchor="start" x="11" y="-564.3" font-family="Times,serif" font-size="14.00">&#45; project integer [U]</text>
-<text text-anchor="start" x="11" y="-549.3" font-family="Times,serif" font-size="14.00">&#45; source text [U]</text>
+<text text-anchor="start" x="11" y="-549.3" font-family="Times,serif" font-size="14.00">&#45; source_label text [U]</text>
 <text text-anchor="start" x="11" y="-534.3" font-family="Times,serif" font-size="14.00">&#45; details jsonb [N]</text>
 <text text-anchor="start" x="11" y="-519.3" font-family="Times,serif" font-size="14.00">&#45; entry_created timestamp with time zone</text>
 <text text-anchor="start" x="11" y="-504.3" font-family="Times,serif" font-size="14.00">&#45; weight integer [N]</text>

@@ -275,16 +275,16 @@ var beforeCliSetup = func(cctx *cli.Context) error {
 			return nil
 		}
 
+		currentCmd = firstCmdOccurrence
+
 		// get-new-dags does its own locking for now
-		if firstCmdOccurrence != "get-new-dags" {
+		if currentCmd != "get-new-dags" {
 			var err error
-			if currentCmdLock, err = fslock.Lock(os.TempDir(), "cargocron-"+firstCmdOccurrence); err != nil {
+			if currentCmdLock, err = fslock.Lock(os.TempDir(), "cargocron-"+currentCmd); err != nil {
 				return err
 			}
+			log.Infow(fmt.Sprintf("=== BEGIN '%s' run", currentCmd))
 		}
-
-		currentCmd = firstCmdOccurrence
-		log.Infow(fmt.Sprintf("=== BEGIN '%s' run", currentCmd))
 
 		// init the shared DB connection: do it here, since now we know the config *AND*
 		// we want the maxConn counter shared, singleton-style

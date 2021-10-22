@@ -28,8 +28,8 @@ type faunaQueryUsers struct {
 	} `graphql:"findUsersByCreated (from: $since _cursor: $cursor_position _size: $page_size)"`
 }
 type faunaQueryUsersResult struct {
-	UserID  string `graphql:"_id"`
-	Created time.Time
+	UserID    string    `graphql:"_id"`
+	CreatedAt time.Time `graphql:"created"`
 	dagSourceMeta
 }
 
@@ -41,19 +41,19 @@ type faunaQueryDags struct {
 	} `graphql:"findUploadsCreatedAfter (since: $since _cursor: $cursor_position _size: $page_size)"`
 }
 type faunaQueryDagsResult struct {
-	ID      string `graphql:"_id"`
-	Created time.Time
-	Deleted *time.Time
-	Name    string
-	Type    string
-	Content struct {
-		CidString string `graphql:"cid"`
-		Created   time.Time
+	ID        string     `graphql:"_id"`
+	CreatedAt time.Time  `graphql:"created"`
+	RemovedAt *time.Time `graphql:"deleted"`
+	Name      string
+	Type      string
+	Content   struct {
+		CidString string    `graphql:"cid"`
+		CreatedAt time.Time `graphql:"created"`
 		DagSize   *int64
 		Pins      struct {
 			Data []struct {
-				Status  string
-				Updated time.Time
+				Status    string
+				UpdatedAt time.Time `graphql:"updated"`
 			}
 		}
 	}
@@ -61,25 +61,18 @@ type faunaQueryDagsResult struct {
 	AuthToken sourceToken
 }
 
-var faunaSysUser = faunaQueryUsersResult{
-	dagSourceMeta: dagSourceMeta{
-		Name: sysUserSource,
-	},
-	UserID:  sysUserSource,
-	Created: sysUserCreateTime,
-}
+func getFaunaDags(cctx *cli.Context, project faunaProject, cutoff time.Time, knownDags, ownAggregates map[cid.Cid]struct{}) error {
 
-func getFaunaDags(cctx *cli.Context, project faunaProject, cutoff time.Time, availableDags, ownAggregates map[cid.Cid]struct{}) error {
-
-	var newSources, totalQueryDags, newDags, newPending, removedDags int
+	var mostRecentDag *time.Time
+	var newSources, totalQueryDags, newDags, removedDags int
 	defer func() {
 		log.Infow("summary",
 			"project", project.label,
 			"queryPeriodSince", cutoff,
 			"totalQueryPeriodDags", totalQueryDags,
+			"mostRecentDag", mostRecentDag,
 			"newSources", newSources,
 			"newDags", newDags,
-			"newPendingDags", newPending,
 			"removedDags", removedDags,
 		)
 	}()
@@ -137,6 +130,8 @@ func getFaunaDags(cctx *cli.Context, project faunaProject, cutoff time.Time, ava
 
 		for _, d := range resultPage.FindUploadsCreatedAfter.Data {
 
+			mostRecentDag = &d.CreatedAt
+
 			c, err := cid.Parse(d.Content.CidString)
 			if err != nil {
 				return err
@@ -149,45 +144,19 @@ func getFaunaDags(cctx *cli.Context, project faunaProject, cutoff time.Time, ava
 			}
 
 			totalQueryDags++
-			var pendingPinForUser string
 
 			earliestPinSeen := new(time.Time)
 			pinStates := make(map[string]int)
 			for _, p := range d.Content.Pins.Data {
 				pinStates[p.Status]++
 				if p.Status == "Pinned" &&
-					(earliestPinSeen.IsZero() || earliestPinSeen.After(p.Updated)) {
-					*earliestPinSeen = p.Updated // copy
+					(earliestPinSeen.IsZero() || earliestPinSeen.After(p.UpdatedAt)) {
+					*earliestPinSeen = p.UpdatedAt // copy
 				}
 			}
 			if earliestPinSeen.IsZero() {
 				// removes it from the JSON blob
 				earliestPinSeen = nil
-			}
-
-			// we might already have the CID - amount of pins not relevant
-			if _, avail := availableDags[c]; !avail {
-
-				// Only consider things with at least one `Pinned` state
-				// everything else may or may not be bogus
-				if pinStates["Pinned"] == 0 {
-					// we are *possibly* not going to find the data for this
-					// but we also want to register it *in case* sweepers find it
-					// to do that we swapout the user and proceed
-					pendingPinForUser = d.User.UserID
-
-					// create the user so we do not lose track of them
-					isNew, err := upsertFaunaUser(cctx.Context, project.id, userLookup, d.User)
-					if err != nil {
-						return err
-					}
-					if isNew {
-						newSources++
-					}
-
-					d.AuthToken = sourceToken{}
-					d.User = faunaSysUser
-				}
 			}
 
 			isNew, err := upsertFaunaUser(cctx.Context, project.id, userLookup, d.User)
@@ -199,12 +168,10 @@ func getFaunaDags(cctx *cli.Context, project faunaProject, cutoff time.Time, ava
 			}
 
 			em := dagSourceEntryMeta{
-				OriginalCid:   d.Content.CidString,
-				Label:         d.Name,
-				UploadType:    d.Type,
-				ClaimedSize:   d.Content.DagSize,
-				PinLagForUser: pendingPinForUser,
-				PinnedAt:      earliestPinSeen,
+				OriginalCid: d.Content.CidString,
+				Label:       d.Name,
+				UploadType:  d.Type,
+				PinnedAt:    earliestPinSeen,
 			}
 			if d.AuthToken.ID != "" {
 				em.TokenUsed = &d.AuthToken
@@ -214,25 +181,27 @@ func getFaunaDags(cctx *cli.Context, project faunaProject, cutoff time.Time, ava
 				return err
 			}
 
-			_, err = cargoDb.Exec(
-				cctx.Context,
-				`
-				INSERT INTO cargo.dags ( cid_v1, entry_created ) VALUES ( $1, $2 )
-					ON CONFLICT DO NOTHING
-				`,
-				c.String(),
-				d.Content.Created,
-			)
-			if err != nil {
-				return err
+			if _, known := knownDags[c]; !known {
+				_, err = cargoDb.Exec(
+					cctx.Context,
+					`
+					INSERT INTO cargo.dags ( cid_v1, entry_created ) VALUES ( $1, $2 )
+						ON CONFLICT DO NOTHING
+					`,
+					c.String(),
+					d.Content.CreatedAt,
+				)
+				if err != nil {
+					return err
+				}
 			}
 
-			var wasDeleted bool
+			var wasRemoved bool
 			err = cargoDb.QueryRow(
 				cctx.Context,
 				`
 				INSERT INTO cargo.dag_sources ( cid_v1, source_key, srcid, size_claimed, details, entry_created, entry_removed ) VALUES ( $1, $2, $3, $4, $5, $6, $7 )
-					ON CONFLICT ON CONSTRAINT singleton_dag_source_record DO UPDATE SET
+					ON CONFLICT ( srcid, source_key ) DO UPDATE SET
 						size_claimed = EXCLUDED.size_claimed,
 						details = EXCLUDED.details,
 						entry_created = EXCLUDED.entry_created,
@@ -258,21 +227,17 @@ func getFaunaDags(cctx *cli.Context, project faunaProject, cutoff time.Time, ava
 				userLookup[d.User.UserID],
 				d.Content.DagSize,
 				entryMeta,
-				d.Created,
-				d.Deleted,
-			).Scan(&isNew, &wasDeleted)
+				d.CreatedAt,
+				d.RemovedAt,
+			).Scan(&isNew, &wasRemoved)
 			if err != nil {
 				return err
 			}
 
-			if d.Deleted != nil && !wasDeleted {
+			if d.RemovedAt != nil && !wasRemoved {
 				removedDags++
 			} else if isNew {
-				if pendingPinForUser != "" {
-					newPending++
-				} else {
-					newDags++
-				}
+				newDags++
 			}
 		}
 
@@ -293,11 +258,11 @@ func upsertFaunaUser(ctx context.Context, projID int, seen map[string]int64, u f
 	}
 
 	sourceMeta, err := json.Marshal(dagSourceMeta{
-		Github:        u.Github,
+		GithubID:      u.GithubID,
 		Name:          u.Name,
 		Email:         u.Email,
 		PublicAddress: u.PublicAddress,
-		Issuer:        u.Issuer,
+		MagicLinkID:   u.MagicLinkID,
 		Picture:       u.Picture,
 		UsedStorage:   u.UsedStorage,
 	})
@@ -309,15 +274,15 @@ func upsertFaunaUser(ctx context.Context, projID int, seen map[string]int64, u f
 	err = cargoDb.QueryRow(
 		ctx,
 		`
-		INSERT INTO cargo.sources ( project, source, entry_created, details )
+		INSERT INTO cargo.sources ( project, source_label, entry_created, details )
 			VALUES ( $1, $2, $3, $4 )
-			ON CONFLICT ( project, source ) DO UPDATE SET
+			ON CONFLICT ( project, source_label ) DO UPDATE SET
 				details = EXCLUDED.details
 		RETURNING srcid, (xmax = 0)
 		`,
 		projID,
 		u.UserID,
-		u.Created,
+		u.CreatedAt,
 		sourceMeta,
 	).Scan(&srcid, &isNew)
 	if err != nil {
