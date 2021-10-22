@@ -23,6 +23,16 @@ export CARGO_S3_BUCKET="web3-storage-carstage"
 
 [[ $EUID -ne 0 ]] && echo "You must be root to run this" && exit 1
 
+###
+### Only execute one version of offloader concurrently
+###
+[[ -z "${OFFLOAD_LOCKFILE:-}" ]] \
+&& export OFFLOAD_LOCKFILE="/dev/shm/s3_offload.lock" \
+&& exec /usr/bin/flock -en "$OFFLOAD_LOCKFILE" "$0" "$@"
+###
+###
+###
+
 aws s3 sync --no-progress --acl public-read "$CARGO_DATADIR" "s3://$CARGO_S3_BUCKET/"
 
 aws s3 ls "s3://$CARGO_S3_BUCKET/" \
