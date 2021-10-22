@@ -158,18 +158,6 @@ var analyzeDags = &cli.Command{
 				"referencedBlocks", atomic.LoadUint64(total.refBlocks),
 				"bytes", atomic.LoadUint64(total.size),
 			)
-
-			// cargo.refs-involving query plans become *really* unstable
-			// when left for the auto-vacuum to work on
-			// just be aggressively explicit
-			if err == nil && atomic.LoadUint64(total.refBlocks) > 0 {
-				// twice for good measure
-				_, err = cargoDb.Exec(context.Background(), `VACUUM ANALYZE cargo.refs`)
-				if err == nil {
-					_, err = cargoDb.Exec(context.Background(), `VACUUM ANALYZE cargo.refs`)
-				}
-			}
-
 		}()
 
 		todoCount := uint64(len(dagsToDownloadAndProcess) + len(dagsToProcess))
