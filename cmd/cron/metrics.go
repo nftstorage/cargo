@@ -287,8 +287,8 @@ var metricsList = []cargoMetric{
 		help: "Amount of known best-effort-deduplicated bytes stored per project",
 		query: `
 			WITH
-				q AS (
-					SELECT s.project, SUM(d.size_actual) val
+				cidset AS (
+					SELECT DISTINCT s.project, ds.cid_v1
 						FROM cargo.sources s, cargo.dag_sources ds, cargo.dags d
 					WHERE
 						( s.weight >= 0 OR s.weight IS NULL )
@@ -301,7 +301,7 @@ var metricsList = []cargoMetric{
 							AND
 						ds.entry_removed IS NULL
 							AND
-						-- ensure we are not a part of something else active
+						-- ensure we are not a part of something else active from *same project*
 						NOT EXISTS (
 							SELECT 42
 								FROM cargo.refs r, cargo.dag_sources rds, cargo.sources rs
@@ -315,12 +315,15 @@ var metricsList = []cargoMetric{
 								rds.srcid = rs.srcid
 									AND
 								( rs.weight >= 0 OR rs.weight IS NULL )
+									AND
+								rs.project = s.project
 						)
-					GROUP BY s.project
 				)
-			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+			SELECT p.project::TEXT, COALESCE( SUM( d.size_actual), 0 ) AS val
 				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
-				LEFT JOIN q USING ( project )
+				LEFT JOIN cidset USING ( project )
+				LEFT JOIN cargo.dags d USING ( cid_v1 )
+			GROUP BY p.project
 		`,
 	},
 	{
@@ -380,7 +383,7 @@ var metricsList = []cargoMetric{
 								( acts.weight >= 0 OR acts.weight IS NULL )
 						)
 							AND
-						-- ensure we are not a part of something else active
+						-- ensure we are not a part of something else active from *same project*
 						NOT EXISTS (
 							SELECT 42
 								FROM cargo.refs r, cargo.dag_sources rds, cargo.sources rs
@@ -394,6 +397,8 @@ var metricsList = []cargoMetric{
 								rds.srcid = rs.srcid
 									AND
 								( rs.weight >= 0 OR rs.weight IS NULL )
+									AND
+								rs.project = s.project
 						)
 					GROUP BY s.project
 				)
@@ -423,7 +428,7 @@ var metricsList = []cargoMetric{
 							AND
 						ds.entry_removed IS NULL
 							AND
-						-- ensure we are not a part of something else active
+						-- ensure we are not a part of something else active from *same project*
 						NOT EXISTS (
 							SELECT 42
 								FROM cargo.refs r, cargo.dag_sources rds, cargo.sources rs
@@ -437,6 +442,8 @@ var metricsList = []cargoMetric{
 								rds.srcid = rs.srcid
 									AND
 								( rs.weight >= 0 OR rs.weight IS NULL )
+									AND
+								rs.project = s.project
 						)
 					GROUP BY s.project
 				)

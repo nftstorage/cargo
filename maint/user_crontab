@@ -4,7 +4,7 @@
 #  crontab - < maint/user_crontab
 #
 # Test for pending changes:
-#  diff -U0 maint/user_crontab <( crontab -l ) | less -S
+#  diff -w -U0 maint/user_crontab <( crontab -l ) | less -S
 #
 GOLOG_LOG_FMT=json
 
@@ -28,8 +28,8 @@ GOLOG_LOG_FMT=json
 # - allowing looking back "further in time" to catch stragglers
 * * * * *   SWEEP_TIMEOUT_SEC=180  SWEEP_MOST_AGE="30 minutes"  SWEEP_LEAST_AGE="0 minutes"   SWEEP_CONCURRENCY=128  SWEEP_EXTRA_COND="weight >= 0 AND ( cid_v1 LIKE 'bafk\%' OR project != 2 )"  $HOME/dagcargo/maint/log_and_run.bash pin_sweep_immediate_easy.log  $HOME/dagcargo/maint/pin_sweep.bash
 * * * * *   SWEEP_TIMEOUT_SEC=240  SWEEP_MOST_AGE="30 minutes"  SWEEP_LEAST_AGE="0 minutes"   SWEEP_CONCURRENCY=256  SWEEP_EXTRA_COND="weight >= 0 AND cid_v1 NOT LIKE 'bafk\%' AND project = 2"  $HOME/dagcargo/maint/log_and_run.bash pin_sweep_immediate_rest.log  $HOME/dagcargo/maint/pin_sweep.bash
-* * * * *   SWEEP_TIMEOUT_SEC=1800 SWEEP_MOST_AGE="1 days"      SWEEP_LEAST_AGE="30 minutes"  SWEEP_CONCURRENCY=512  SWEEP_EXTRA_COND="weight >= 0 AND NOT cluster_pin_lag"                       $HOME/dagcargo/maint/log_and_run.bash pin_sweep_heavy.log           $HOME/dagcargo/maint/pin_sweep.bash
-* * * * *   SWEEP_TIMEOUT_SEC=7200 SWEEP_MOST_AGE="30 days"     SWEEP_LEAST_AGE="1 days"      SWEEP_CONCURRENCY=512                                                                               $HOME/dagcargo/maint/log_and_run.bash pin_sweep_old.log             $HOME/dagcargo/maint/pin_sweep.bash
+* * * * *   SWEEP_TIMEOUT_SEC=1800 SWEEP_MOST_AGE="2 days"      SWEEP_LEAST_AGE="30 minutes"  SWEEP_CONCURRENCY=512  SWEEP_EXTRA_COND="weight >= 0"                                               $HOME/dagcargo/maint/log_and_run.bash pin_sweep_heavy.log           $HOME/dagcargo/maint/pin_sweep.bash
+* * * * *   SWEEP_TIMEOUT_SEC=7200 SWEEP_MOST_AGE="30 days"     SWEEP_LEAST_AGE="2 days"      SWEEP_CONCURRENCY=1024                                                                              $HOME/dagcargo/maint/log_and_run.bash pin_sweep_old.log             $HOME/dagcargo/maint/pin_sweep.bash
 * * * * *   SWEEP_TIMEOUT_SEC=7200 SWEEP_MOST_AGE="90 days"     SWEEP_LEAST_AGE="30 days"     SWEEP_CONCURRENCY=512                                                                               $HOME/dagcargo/maint/log_and_run.bash pin_sweep_ancient.log         $HOME/dagcargo/maint/pin_sweep.bash
 
 # deal status overviews

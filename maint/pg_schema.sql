@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS cargo.dags (
   entry_last_updated TIMESTAMP WITH TIME ZONE NOT NULL,
   CONSTRAINT analyzis_markers CHECK ( ( size_actual IS NULL ) = ( entry_analyzed IS NULL ) )
 );
-CREATE INDEX IF NOT EXISTS dags_last_updated_idx ON cargo.dags ( entry_last_updated );
+CREATE INDEX IF NOT EXISTS dags_last_updated ON cargo.dags ( entry_last_updated );
+CREATE INDEX IF NOT EXISTS dags_entry_analyzed ON cargo.dags ( entry_analyzed );
 CREATE INDEX IF NOT EXISTS dags_size_actual ON cargo.dags ( size_actual );
 CREATE TRIGGER trigger_dag_insert
   BEFORE INSERT ON cargo.dags

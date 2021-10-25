@@ -470,9 +470,17 @@ var aggregateDags = &cli.Command{
 
 func aggregationCandidates(ctx context.Context) ([]pendingDag, bool, int, error) {
 
-	// the order is critical so that we can group same-source dags together
-	masterListSQL := eligibleForAggregationSQL(targetMaxSize, settleDelayHours) +
-		` ORDER BY weight DESC NULLS FIRST, srcid, size_actual DESC, cid_v1`
+	// the ORDER BY is critical so that we can group same-source dags together
+	masterListSQL := fmt.Sprintf(
+		`
+		SELECT
+			cand.*,
+			( SELECT 1+COUNT(*) FROM cargo.refs r WHERE r.cid_v1 = cand.cid_v1 ) AS node_count
+		FROM ( %s ) cand
+		ORDER BY weight DESC NULLS FIRST, srcid, size_actual DESC, cid_v1
+		`,
+		eligibleForAggregationSQL(targetMaxSize, settleDelayHours),
+	)
 
 	if captureAggregateCandidatesSnapshot {
 		mvName := `cargo.debug_aggregate_candidates_snapshot__` + time.Now().Format("2006_01_02__15_04_05")
@@ -511,7 +519,7 @@ func aggregationCandidates(ctx context.Context) ([]pendingDag, bool, int, error)
 		var pending pendingDag
 		var cidStr string
 
-		if err = rows.Scan(&pending.srcid, &cidStr, &pending.aggentry.UniqueBlockCumulativeSize, &pending.aggentry.UniqueBlockCount, &pending.timeStamp, nil, nil, nil); err != nil {
+		if err = rows.Scan(&pending.srcid, &cidStr, &pending.aggentry.UniqueBlockCumulativeSize, &pending.timeStamp, nil, nil, nil, &pending.aggentry.UniqueBlockCount); err != nil {
 			return nil, false, 0, err
 		}
 
@@ -541,13 +549,12 @@ func aggregationCandidates(ctx context.Context) ([]pendingDag, bool, int, error)
 func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) string {
 	return fmt.Sprintf(
 		`
-		WITH
-			prefiltered AS (
+		-- bend over backwards through *multiple* set-subtractions, because again: NO FUCKING HINTS
+			(
 				SELECT
-						s.srcid,
-						d.cid_v1,
+						ds.srcid,
+						ds.cid_v1,
 						d.size_actual,
-						( SELECT 1+COUNT(*) FROM cargo.refs r WHERE r.cid_v1 = d.cid_v1 ) AS node_count,
 						d.entry_analyzed,
 						ds.entry_created,
 						s.project,
@@ -558,48 +565,101 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 					-- not yet aggregated anti-join (IS NULL below)
 					LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
 				WHERE
-					ds.entry_removed IS NULL
-						AND
 					-- only analysed entries (FIXME for now do not deal with oversizes/that comes later)
 					( d.size_actual IS NOT NULL AND d.size_actual <= %[1]d )
 						AND
-					-- only active sources
+					-- no inactive sources
 					( s.weight >= 0 OR s.weight IS NULL )
+						AND
+					ds.entry_removed IS NULL
 						AND
 					-- not yet aggregated
 					ae.cid_v1 IS NULL
-			)
-		SELECT *
-			FROM prefiltered pf
-		WHERE
-			-- exclude members of something else *that is subject to aggregation*
-			NOT EXISTS (
-				SELECT 42
-					FROM cargo.refs r, prefiltered pfparent
+
+			-- exclude everything that is "too young"
+			-- give enough time for metadata/containing dags to trickle in too, allowing for source outages
+			EXCEPT
+
+				SELECT
+						ds.srcid,
+						ds.cid_v1,
+						d.size_actual,
+						d.entry_analyzed,
+						ds.entry_created,
+						s.project,
+						s.weight
+					FROM cargo.dag_sources ds
+					JOIN cargo.dags d USING ( cid_v1 )
+					JOIN cargo.sources s USING ( srcid )
+					LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
+					LEFT JOIN cargo.refs r
+							ON ds.cid_v1 = r.cid_v1
+					LEFT JOIN cargo.dags chd
+							ON r.ref_cid = chd.cid_v1
+					LEFT JOIN cargo.dag_sources chds
+							ON chd.cid_v1 = chds.cid_v1
+					LEFT JOIN cargo.aggregate_entries chae
+							ON chd.cid_v1 = chae.cid_v1
 				WHERE
-					pf.cid_v1 = r.ref_cid
+					-- no inactive sources
+					( s.weight >= 0 OR s.weight IS NULL )
 						AND
-					r.cid_v1 = pfparent.cid_v1
+					-- neither parent nor children aggregated
+					( ae.cid_v1 IS NULL AND chae.cid_v1 IS NULL )
+						AND
+					d.entry_analyzed > ( NOW() - '%[2]s'::INTERVAL )
+						AND
+					(
+						chd.entry_analyzed IS NULL
+							OR
+						(
+							-- same source is important to ascertain timing
+							ds.srcid = chds.srcid
+									AND
+							chd.entry_analyzed > ( NOW() - '%[2]s'::INTERVAL )
+						)
+					)
 			)
-				AND
-			-- give enough time for metadata/containing dags to trickle in too, allowing for outages
-			(
-				pf.entry_analyzed <= ( NOW() - '%[2]s'::INTERVAL )
-					OR
-				EXISTS (
-					SELECT 42
-						FROM cargo.refs r, prefiltered pfchildren
-					WHERE
-						pf.cid_v1 = r.cid_v1
-							AND
-						r.ref_cid = pfchildren.cid_v1
-							AND
-						pf.srcid = pfchildren.srcid
-							AND
-						pfchildren.entry_analyzed <= ( NOW() - '%[2]s'::INTERVAL )
-				)
-			)
-	`,
+
+		-- exclude dags that are included in other dags already marked above
+		EXCEPT
+
+			SELECT
+					ds.srcid,
+					ds.cid_v1,
+					d.size_actual,
+					d.entry_analyzed,
+					ds.entry_created,
+					s.project,
+					s.weight
+				FROM cargo.dag_sources ds
+				JOIN cargo.dags d USING ( cid_v1 )
+				JOIN cargo.sources s USING ( srcid )
+				JOIN cargo.refs r
+					ON ds.cid_v1 = r.ref_cid
+				JOIN cargo.dag_sources pds
+					ON r.cid_v1 = pds.cid_v1
+				JOIN cargo.dags pd
+					ON pds.cid_v1 = pd.cid_v1
+				JOIN cargo.sources ps
+				ON pds.srcid = ps.srcid
+				-- not yet aggregated anti-joins (IS NULL below)
+				LEFT JOIN cargo.aggregate_entries ae ON
+					ds.cid_v1 = ae.cid_v1
+				LEFT JOIN cargo.aggregate_entries pae ON
+					pds.cid_v1 = pae.cid_v1
+			WHERE
+				-- neither us nor parent yet aggregated
+				( ae.cid_v1 IS NULL AND pae.cid_v1 IS NULL )
+					AND
+				-- no inactive sources
+				( s.weight >= 0 OR s.weight IS NULL )
+					AND
+				-- no inactive parents
+				( ps.weight >= 0 OR ps.weight IS NULL )
+					AND
+				pds.entry_removed IS NULL
+		`,
 		targetMaxSize,
 		fmt.Sprintf("%d hours", settleDelayHours),
 	)
