@@ -161,7 +161,7 @@ var metricsList = []cargoMetric{
 					GROUP BY s.project
 				)
 			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
-					FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
+				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
 				LEFT JOIN q USING ( project )
 		`,
 	},
@@ -251,7 +251,7 @@ var metricsList = []cargoMetric{
 						)
 					GROUP BY s.project
 				)
-			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+			SELECT p.project::TEXT, q.val
 				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
 				LEFT JOIN q USING ( project )
 			`,
@@ -287,42 +287,46 @@ var metricsList = []cargoMetric{
 		help: "Amount of known best-effort-deduplicated bytes stored per project",
 		query: `
 			WITH
-				cidset AS (
-					SELECT DISTINCT s.project, ds.cid_v1
-						FROM cargo.sources s, cargo.dag_sources ds, cargo.dags d
+				q AS (
+
+					SELECT s.project, d.cid_v1, d.size_actual
+						FROM cargo.dag_sources ds
+						JOIN cargo.dags d USING ( cid_v1 )
+						JOIN cargo.sources s USING ( srcid )
 					WHERE
 						( s.weight >= 0 OR s.weight IS NULL )
-							AND
-						s.srcid = ds.srcid
-							AND
-						ds.cid_v1 = d.cid_v1
 							AND
 						d.size_actual IS NOT NULL
 							AND
 						ds.entry_removed IS NULL
+
+				-- ensure we are not a part of something else active from *same project*
+				EXCEPT
+
+					SELECT s.project, d.cid_v1, d.size_actual
+						FROM cargo.dag_sources ds
+						JOIN cargo.dags d USING ( cid_v1 )
+						JOIN cargo.sources s USING ( srcid )
+						JOIN cargo.refs r
+							ON ds.cid_v1 = r.ref_cid
+						JOIN cargo.dag_sources rds
+							ON r.cid_v1 = rds.cid_v1
+						JOIN cargo.sources rs
+							ON rds.srcid = rs.srcid
+					WHERE
+						d.size_actual IS NOT NULL
 							AND
-						-- ensure we are not a part of something else active from *same project*
-						NOT EXISTS (
-							SELECT 42
-								FROM cargo.refs r, cargo.dag_sources rds, cargo.sources rs
-							WHERE
-								r.ref_cid = d.cid_v1
-									AND
-								r.cid_v1 = rds.cid_v1
-									AND
-								rds.entry_removed IS NULL
-									AND
-								rds.srcid = rs.srcid
-									AND
-								( rs.weight >= 0 OR rs.weight IS NULL )
-									AND
-								rs.project = s.project
-						)
+						ds.entry_removed IS NULL
+							AND
+						rds.entry_removed IS NULL
+							AND
+						( rs.weight >= 0 OR rs.weight IS NULL )
+							AND
+						rs.project = s.project
 				)
-			SELECT p.project::TEXT, COALESCE( SUM( d.size_actual), 0 ) AS val
+			SELECT p.project::TEXT, COALESCE( SUM( q.size_actual), 0 ) AS val
 				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
-				LEFT JOIN cidset USING ( project )
-				LEFT JOIN cargo.dags d USING ( cid_v1 )
+				LEFT JOIN q USING ( project )
 			GROUP BY p.project
 		`,
 	},
@@ -358,7 +362,7 @@ var metricsList = []cargoMetric{
 		query: `
 			WITH
 				q AS (
-					SELECT s.project, SUM(d.size_actual) val
+					SELECT s.project, d.cid_v1, d.size_actual
 						FROM cargo.sources s
 						JOIN cargo.dag_sources ds USING ( srcid )
 						JOIN cargo.dags d USING ( cid_v1 )
@@ -382,29 +386,37 @@ var metricsList = []cargoMetric{
 									AND
 								( acts.weight >= 0 OR acts.weight IS NULL )
 						)
+
+				-- ensure we are not a part of something else active from *same project*
+				EXCEPT
+
+					SELECT s.project, d.cid_v1, d.size_actual
+						FROM cargo.sources s
+						JOIN cargo.dag_sources ds USING ( srcid )
+						JOIN cargo.dags d USING ( cid_v1 )
+						JOIN cargo.refs r
+							ON d.cid_V1 = r.ref_cid
+						JOIN cargo.dag_sources rds
+							ON r.cid_v1 = rds.cid_v1
+						JOIN cargo.sources rs
+							ON rds.srcid = rs.srcid
+					WHERE
+						( s.weight >= 0 OR s.weight IS NULL )
 							AND
-						-- ensure we are not a part of something else active from *same project*
-						NOT EXISTS (
-							SELECT 42
-								FROM cargo.refs r, cargo.dag_sources rds, cargo.sources rs
-							WHERE
-								r.ref_cid = d.cid_v1
-									AND
-								r.cid_v1 = rds.cid_v1
-									AND
-								rds.entry_removed IS NULL
-									AND
-								rds.srcid = rs.srcid
-									AND
-								( rs.weight >= 0 OR rs.weight IS NULL )
-									AND
-								rs.project = s.project
-						)
-					GROUP BY s.project
+						d.size_actual IS NOT NULL
+							AND
+						ds.entry_removed IS NOT NULL
+							AND
+						( rs.weight >= 0 OR rs.weight IS NULL )
+							AND
+						rds.entry_removed IS NULL
+							AND
+						rs.project = s.project
 				)
-			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+			SELECT p.project::TEXT, COALESCE( SUM( q.size_actual), 0 ) AS val
 				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
 				LEFT JOIN q USING ( project )
+			GROUP BY p.project
 		`,
 	},
 
@@ -488,7 +500,7 @@ var metricsList = []cargoMetric{
 						NOT EXISTS ( SELECT 42 FROM cargo.refs r WHERE r.ref_cid = d.cid_v1 )
 					GROUP BY s.project
 				)
-			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+			SELECT p.project::TEXT, q.val
 				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
 				LEFT JOIN q USING ( project )
 			`,
@@ -591,13 +603,39 @@ var metricsList = []cargoMetric{
 		help: "Count of aggregated items with at least one active deal per project",
 		query: `
 			WITH
-				active_sources AS (
-					SELECT * FROM cargo.sources WHERE weight >= 0 OR weight IS NULL
-				),
 				q AS (
 					SELECT s.project, COUNT(*) val
-						FROM active_sources s
+						FROM cargo.sources s
 						JOIN cargo.dag_sources ds USING ( srcid )
+					WHERE
+						EXISTS (
+							SELECT 42
+								FROM cargo.aggregate_entries ae, cargo.deals de
+							WHERE
+								ae.cid_v1 = ds.cid_v1
+									AND
+								ae.aggregate_cid = de.aggregate_cid
+									AND
+								de.status = 'active'
+						)
+					GROUP BY s.project
+				)
+			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
+				LEFT JOIN q USING ( project )
+		`,
+	},
+	{
+		kind: cargoMetricGauge,
+		name: "dagcargo_project_bytes_in_active_deals",
+		help: "Amount of per-DAG-deduplicated bytes with at least one active deal per project",
+		query: `
+			WITH
+				q AS (
+					SELECT s.project, SUM(d.size_actual) val
+						FROM cargo.sources s
+						JOIN cargo.dag_sources ds USING ( srcid )
+						JOIN cargo.dags d USING ( cid_v1 )
 					WHERE
 						EXISTS (
 							SELECT 42
@@ -622,12 +660,9 @@ var metricsList = []cargoMetric{
 		help: "Count of aggregated items awaiting their first active deal per project",
 		query: `
 			WITH
-				active_sources AS (
-					SELECT * FROM cargo.sources WHERE weight >= 0 OR weight IS NULL
-				),
 				q AS (
 					SELECT s.project, COUNT(*) val
-						FROM active_sources s
+						FROM cargo.sources s
 						JOIN cargo.dag_sources ds USING ( srcid )
 					WHERE
 						EXISTS (
@@ -652,6 +687,86 @@ var metricsList = []cargoMetric{
 				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
 				LEFT JOIN q USING ( project )
 		`,
+	},
+	{
+		kind: cargoMetricGauge,
+		name: "dagcargo_project_bytes_undealt_aggregates",
+		help: "Amount of per-DAG-deduplicated bytes awaiting their first active deal per project",
+		query: `
+			WITH
+				q AS (
+					SELECT s.project, SUM(d.size_actual) val
+						FROM cargo.sources s
+						JOIN cargo.dag_sources ds USING ( srcid )
+						JOIN cargo.dags d USING ( cid_v1 )
+					WHERE
+						EXISTS (
+							SELECT 42
+								FROM cargo.aggregate_entries ae
+							WHERE ae.cid_v1 = ds.cid_v1
+						)
+							AND
+						NOT EXISTS (
+							SELECT 42
+								FROM cargo.aggregate_entries ae, cargo.deals de
+							WHERE
+								ae.cid_v1 = ds.cid_v1
+									AND
+								ae.aggregate_cid = de.aggregate_cid
+									AND
+								de.status = 'active'
+						)
+					GROUP BY s.project
+				)
+			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
+				LEFT JOIN q USING ( project )
+		`,
+	},
+	{
+		kind: cargoMetricGauge,
+		name: "dagcargo_project_bytes_undealt_aggregates_deduplicated",
+		help: "Best-effort-deduplicated bytes awaiting their first active deal per project",
+		query: `
+			WITH
+				q AS (
+					SELECT s.project, SUM( d.size_actual ) AS val
+						FROM cargo.sources s
+						JOIN cargo.dag_sources ds USING ( srcid )
+						JOIN cargo.dags d USING ( cid_v1 )
+					WHERE
+						EXISTS (
+							SELECT 42
+								FROM cargo.aggregate_entries ae
+							WHERE ae.cid_v1 = ds.cid_v1
+						)
+							AND
+						NOT EXISTS (
+							SELECT 42
+								FROM cargo.aggregate_entries ae, cargo.deals de
+							WHERE
+								ae.cid_v1 = ds.cid_v1
+									AND
+								ae.aggregate_cid = de.aggregate_cid
+									AND
+								de.status = 'active'
+						)
+							AND
+						-- ensure we are not a part of something else aggregated
+						NOT EXISTS (
+							SELECT 42
+								FROM cargo.refs r, cargo.aggregate_entries rae
+							WHERE
+								d.cid_v1 = r.ref_cid
+									AND
+								r.cid_v1 = rae.cid_v1
+						)
+					GROUP BY s.project
+				)
+			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
+				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
+				LEFT JOIN q USING ( project )
+			`,
 	},
 	{
 		kind: cargoMetricGauge,
@@ -724,8 +839,11 @@ var metricsList = []cargoMetric{
 			SELECT p.project::TEXT, COALESCE( q.val, 0 ) AS val
 				FROM ( SELECT DISTINCT( project ) FROM cargo.sources ) p
 				LEFT JOIN (
-					SELECT project, SUM(size_actual) AS val
-						FROM ( %s ) e
+					SELECT project, SUM( size_actual ) AS val
+						FROM (
+							SELECT DISTINCT project, cid_v1, size_actual
+								FROM ( %s ) eligible
+						) distinct_eligible
 					GROUP BY project
 				) q USING ( project )
 			`,

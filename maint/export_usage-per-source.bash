@@ -16,7 +16,7 @@ psql service=cargo -c "COPY (
         NULL
     END AS github_url,
     *
-  FROM cargo.dags_processed_summary
+  FROM cargo.source_all_time_summary
   ORDER BY GiB_total DESC, most_recent_upload DESC
 ) TO STDOUT ( FORMAT CSV, QUOTE '\"', HEADER )" \
 | tee >( "$atcat" "$csvout" ) \

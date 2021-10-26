@@ -337,56 +337,6 @@ CREATE OR REPLACE VIEW cargo.aggregate_summary AS (
     ( SELECT COUNT(*) FROM cargo.aggregate_entries ae WHERE a.aggregate_cid = ae.aggregate_cid ) DESC NULLS LAST
 );
 
-CREATE OR REPLACE VIEW cargo.source_daily_summary AS (
-  SELECT
-    DATE_TRUNC( 'day', d.entry_analyzed ) AS cargo_retrieval_day,
-    srcid,
-    COUNT(*) AS daily_count,
-    SUM( d.size_actual ) AS daily_bytes,
-    MAX( EXTRACT( 'epoch' FROM d.entry_analyzed - ds.entry_created ) ) FILTER ( WHERE ds.entry_created < d.entry_analyzed )::BIGINT AS max_retrieval_lag_seconds,
-    MIN( EXTRACT( 'epoch' FROM d.entry_analyzed - ds.entry_created ) ) FILTER ( WHERE ds.entry_created < d.entry_analyzed )::BIGINT AS min_retrieval_lag_seconds
-    FROM cargo.dag_sources ds
-    JOIN cargo.dags d USING ( cid_v1 )
-  WHERE d.size_actual IS NOT NULL
-  GROUP BY cargo_retrieval_day, srcid
-);
-CREATE OR REPLACE VIEW cargo.source_daily_ranked_volume AS (
-  SELECT
-      sds.cargo_retrieval_day,
-      s.project,
-      RANK() OVER ( PARTITION BY sds.cargo_retrieval_day, s.project ORDER BY sds.daily_bytes DESC ) AS daily_rank,
-      sds.srcid,
-      sds.max_retrieval_lag_seconds,
-      sds.daily_count,
-      sds.daily_bytes,
-      COALESCE( s.details ->> 'nickname', s.details ->> 'github_id', s.source_label ) AS source_nick,
-      s.details ->> 'name' AS source_name,
-      s.details ->> 'email' AS source_email,
-      s.details ->> 'github_id' AS source_ghkey,
-      s.weight
-    FROM cargo.source_daily_summary sds
-    JOIN cargo.sources s USING ( srcid )
-  ORDER BY cargo_retrieval_day DESC, s.project, daily_rank, sds.srcid
-);
-CREATE OR REPLACE VIEW cargo.source_daily_ranked_count AS (
-  SELECT
-      sds.cargo_retrieval_day,
-      s.project,
-      RANK() OVER ( PARTITION BY sds.cargo_retrieval_day, s.project ORDER BY sds.daily_count DESC ) AS daily_rank,
-      sds.srcid,
-      sds.max_retrieval_lag_seconds,
-      sds.daily_count,
-      sds.daily_bytes,
-      COALESCE( s.details ->> 'nickname', s.details ->> 'github_id', s.source_label ) AS source_nick,
-      s.details ->> 'name' AS source_name,
-      s.details ->> 'email' AS source_email,
-      s.details ->> 'github_id' AS source_ghkey,
-      s.weight
-    FROM cargo.source_daily_summary sds
-    JOIN cargo.sources s USING ( srcid )
-  ORDER BY cargo_retrieval_day DESC, s.project, daily_rank, sds.srcid
-);
-
 CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
 
   SELECT m.*, s.project, COALESCE( s.weight, 100 ) AS weight
@@ -442,45 +392,58 @@ CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
   ORDER BY s.project, s.weight DESC NULLS FIRST, si.newest_missing DESC, si.srcid
 );
 
-CREATE OR REPLACE VIEW cargo.dags_processed_summary AS (
+CREATE OR REPLACE VIEW cargo.source_daily_summary AS (
+  SELECT
+    DATE_TRUNC( 'day', d.entry_analyzed ) AS cargo_retrieval_day,
+    srcid,
+    COUNT(*) AS daily_count,
+    SUM( d.size_actual ) AS daily_bytes,
+    MAX( EXTRACT( 'epoch' FROM d.entry_analyzed - ds.entry_created ) ) FILTER ( WHERE ds.entry_created < d.entry_analyzed )::BIGINT AS max_retrieval_lag_seconds,
+    MIN( EXTRACT( 'epoch' FROM d.entry_analyzed - ds.entry_created ) ) FILTER ( WHERE ds.entry_created < d.entry_analyzed )::BIGINT AS min_retrieval_lag_seconds
+    FROM cargo.dag_sources ds
+    JOIN cargo.dags d USING ( cid_v1 )
+  WHERE d.size_actual IS NOT NULL
+  GROUP BY cargo_retrieval_day, srcid
+);
+CREATE OR REPLACE VIEW cargo.source_daily_ranked_volume AS (
+  SELECT
+      sds.cargo_retrieval_day,
+      s.project,
+      RANK() OVER ( PARTITION BY sds.cargo_retrieval_day, s.project ORDER BY sds.daily_bytes DESC ) AS daily_rank,
+      sds.srcid,
+      sds.max_retrieval_lag_seconds,
+      sds.daily_count,
+      sds.daily_bytes,
+      COALESCE( s.details ->> 'nickname', s.details ->> 'github_id', s.source_label ) AS source_nick,
+      s.details ->> 'name' AS source_name,
+      s.details ->> 'email' AS source_email,
+      s.details ->> 'github_id' AS source_ghkey,
+      s.weight
+    FROM cargo.source_daily_summary sds
+    JOIN cargo.sources s USING ( srcid )
+  ORDER BY cargo_retrieval_day DESC, s.project, daily_rank, sds.srcid
+);
+CREATE OR REPLACE VIEW cargo.source_daily_ranked_count AS (
+  SELECT
+      sds.cargo_retrieval_day,
+      s.project,
+      RANK() OVER ( PARTITION BY sds.cargo_retrieval_day, s.project ORDER BY sds.daily_count DESC ) AS daily_rank,
+      sds.srcid,
+      sds.max_retrieval_lag_seconds,
+      sds.daily_count,
+      sds.daily_bytes,
+      COALESCE( s.details ->> 'nickname', s.details ->> 'github_id', s.source_label ) AS source_nick,
+      s.details ->> 'name' AS source_name,
+      s.details ->> 'email' AS source_email,
+      s.details ->> 'github_id' AS source_ghkey,
+      s.weight
+    FROM cargo.source_daily_summary sds
+    JOIN cargo.sources s USING ( srcid )
+  ORDER BY cargo_retrieval_day DESC, s.project, daily_rank, sds.srcid
+);
+
+CREATE OR REPLACE VIEW cargo.source_all_time_summary AS (
   WITH
-    -- bend over backwards through set-subtraction, because again: NO FUCKING HINTS
-    deduped AS (
-
-      SELECT
-          ds.srcid,
-          ds.cid_v1,
-          d.size_actual,
-          ds.entry_created
-        FROM cargo.dag_sources ds
-        JOIN cargo.dags d
-          ON
-            ds.cid_v1 = d.cid_v1
-              AND
-            d.size_actual IS NOT NULL
-              AND
-            ds.entry_removed IS NULL
-
-    EXCEPT
-
-      SELECT
-          ds.srcid,
-          ds.cid_v1,
-          d.size_actual,
-          ds.entry_created
-        FROM cargo.dag_sources ds, cargo.dags d, cargo.refs r, cargo.dag_sources parentds
-      WHERE
-        ds.cid_v1 = d.cid_v1
-          AND
-        ds.cid_v1 = r.ref_cid
-          AND
-        r.cid_v1 = parentds.cid_v1
-          AND
-        parentds.srcid = ds.srcid
-          AND
-        parentds.entry_removed IS NULL
-
-    ),
     summary AS (
       SELECT
         srcid,
@@ -488,44 +451,96 @@ CREATE OR REPLACE VIEW cargo.dags_processed_summary AS (
         SUM(size_actual) AS bytes_total,
         MIN(entry_created) AS oldest_dag,
         MAX(entry_created) AS newest_dag
-      FROM deduped
+      FROM (
+          SELECT
+              ds.srcid,
+              ds.cid_v1,
+              d.size_actual,
+              ds.entry_created
+            FROM cargo.dag_sources ds
+            JOIN cargo.dags d USING ( cid_v1 )
+          WHERE
+            d.size_actual IS NOT NULL
+              AND
+            ds.entry_removed IS NULL
+
+        EXCEPT
+
+          SELECT
+              ds.srcid,
+              ds.cid_v1,
+              d.size_actual,
+              ds.entry_created
+            FROM cargo.dag_sources ds
+            JOIN cargo.dags d USING ( cid_v1 )
+            JOIN cargo.refs r
+              ON ds.cid_v1 = r.ref_cid
+            JOIN cargo.dag_sources pds
+              ON r.cid_v1 = pds.cid_v1
+          WHERE
+            -- same source only
+            pds.srcid = ds.srcid
+              AND
+            pds.entry_removed IS NULL
+      ) ded
       GROUP BY srcid
     ),
     summary_unaggregated AS (
       SELECT
-        ds.srcid,
+        srcid,
         COUNT(*) AS count_total,
-        SUM(d.size_actual) AS bytes_total,
-        MIN(ds.entry_created) AS oldest_dag,
-        MAX(ds.entry_created) AS newest_dag
-      FROM cargo.dag_sources ds
-      JOIN cargo.dags d USING ( cid_v1 )
-      LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
-      WHERE
-        d.size_actual IS NOT NULL AND d.size_actual <= 34000000000
-          AND
-        ds.entry_removed IS NULL
-          AND
-        ae.cid_v1 IS NULL
-          AND
-        -- exclude anything that is a member of something else unaggregated from the same srcid
-        NOT EXISTS (
-          SELECT 42
-            FROM cargo.refs r
-            JOIN cargo.dag_sources parentds USING ( cid_v1 )
-            JOIN cargo.dags parentd USING ( cid_v1 )
-            LEFT JOIN cargo.aggregate_entries parentae USING ( cid_v1 )
-          WHERE
-            r.ref_cid = d.cid_v1
-              AND
-            parentd.size_actual <= 34000000000
-              AND
-            parentds.srcid = ds.srcid
-              AND
-            parentds.entry_removed IS NULL
-              AND
-            parentae.aggregate_cid IS NULL
-        )
+        SUM(size_actual) AS bytes_total,
+        MIN(entry_created) AS oldest_dag,
+        MAX(entry_created) AS newest_dag
+      FROM (
+
+        SELECT
+            ds.srcid,
+            ds.cid_v1,
+            d.size_actual,
+            ds.entry_created
+          FROM cargo.dag_sources ds
+          JOIN cargo.dags d USING ( cid_v1 )
+          -- not yet aggregated anti-join (IS NULL below)
+          LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
+        WHERE
+          -- only analysed entries (FIXME for now do not deal with oversizes/that comes later)
+          ( d.size_actual IS NOT NULL AND d.size_actual <= 34000000000 )
+            AND
+          ds.entry_removed IS NULL
+            AND
+          -- not yet aggregated
+          ae.cid_v1 IS NULL
+
+      -- exclude dags that are included in other unaggregated dags from same source
+      EXCEPT
+
+        SELECT
+            ds.srcid,
+            ds.cid_v1,
+            d.size_actual,
+            ds.entry_created
+          FROM cargo.dag_sources ds
+          JOIN cargo.dags d USING ( cid_v1 )
+          JOIN cargo.refs r
+            ON ds.cid_v1 = r.ref_cid
+          JOIN cargo.dag_sources pds
+            ON r.cid_v1 = pds.cid_v1
+          -- not yet aggregated anti-joins (IS NULL below)
+          LEFT JOIN cargo.aggregate_entries ae ON
+            ds.cid_v1 = ae.cid_v1
+          LEFT JOIN cargo.aggregate_entries pae ON
+            pds.cid_v1 = pae.cid_v1
+        WHERE
+          -- same source
+          ds.srcid = pds.srcid
+            AND
+          -- neither us nor parent yet aggregated
+          ( ae.cid_v1 IS NULL AND pae.cid_v1 IS NULL )
+            AND
+          pds.entry_removed IS NULL
+
+      ) dedup_eligible
       GROUP BY srcid
     )
   SELECT
@@ -553,39 +568,3 @@ CREATE OR REPLACE VIEW cargo.dags_processed_summary AS (
   LEFT JOIN cargo.dags_missing_summary ms USING ( srcid )
   ORDER BY (unagg.bytes_total > 0 ), weight DESC NULLS FIRST, unagg.bytes_total DESC NULLS LAST, su.bytes_total DESC NULLS FIRST, s.project, su.srcid
 );
-
-CREATE OR REPLACE
-  FUNCTION cargo.unaggregated_for_sources(BIGINT[]) RETURNS TABLE ( srcid BIGINT, cid_v1 TEXT, size_actual BIGINT, entry_created TIMESTAMP WITH TIME ZONE )
-    LANGUAGE sql STABLE PARALLEL SAFE
-AS $$
-  SELECT
-      ds.srcid,
-      ds.cid_v1,
-      size_actual,
-      ds.entry_created
-    FROM cargo.dag_sources ds
-    JOIN cargo.dags d USING ( cid_v1 )
-    LEFT JOIN cargo.aggregate_entries ae USING ( cid_v1 )
-  WHERE
-    ds.srcid = ANY( $1 )
-      AND
-    ds.entry_removed IS NULL
-      AND
-    d.size_actual IS NOT NULL
-      AND
-    ae.cid_v1 IS NULL
-      AND
-    -- exclude anything that is a member of something else unaggregated (from any srcid)
-    NOT EXISTS (
-      SELECT 42
-        FROM cargo.refs r
-        JOIN cargo.dag_sources rds USING ( cid_v1 )
-        LEFT JOIN cargo.aggregate_entries rae USING ( cid_v1 )
-      WHERE
-        r.ref_cid = ds.cid_v1
-          AND
-        rds.entry_removed IS NULL
-          AND
-        rae.aggregate_cid IS NULL
-    )
-$$;
