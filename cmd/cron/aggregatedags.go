@@ -75,12 +75,13 @@ type runningTotals struct {
 }
 
 type bidBotRequest struct {
-	AggregateCid      string           `json:"payloadCid"`
-	PieceCid          string           `json:"pieceCid"`
-	PaddedPieceSize   int64            `json:"pieceSize"`
-	ReplicationFactor uint             `json:"repFactor"`
-	DealStartTime     time.Time        `json:"deadline"`
-	DataSource        bidBotDatasource `json:"carURL"`
+	AggregateCid                    string           `json:"payloadCid"`
+	PieceCid                        string           `json:"pieceCid"`
+	PaddedPieceSize                 int64            `json:"pieceSize"`
+	ReplicationFactor               uint             `json:"repFactor"`
+	ReplicationMaxDeadline          time.Time        `json:"deadline"`
+	IndividualProposalDeadlineHours uint             `json:"maxProposalDeadlineHours"`
+	DataSource                      bidBotDatasource `json:"carURL"`
 }
 type bidBotDatasource struct {
 	URL string `json:"url"`
@@ -1165,7 +1166,8 @@ func notifyBidBot(cctx *cli.Context, reqData bidBotRequest) error {
 	}
 
 	reqData.ReplicationFactor = cctx.Uint("bidbot-replication-factor")
-	reqData.DealStartTime = time.Now().Add(time.Hour * time.Duration(cctx.Uint("bidbot-deadline-hours")))
+	reqData.ReplicationMaxDeadline = time.Now().Add(24 * time.Hour * time.Duration(cctx.Uint("bidbot-piece-replication-deadline-days")))
+	reqData.IndividualProposalDeadlineHours = cctx.Uint("bidbot-individual-proposal-deadline-hours")
 	reqData.DataSource = bidBotDatasource{URL: datasourceURL.String()}
 	reqJSON, err := json.Marshal(reqData)
 	if err != nil {
@@ -1200,7 +1202,8 @@ func notifyBidBot(cctx *cli.Context, reqData bidBotRequest) error {
 		"bidbotStatus", respData.StatusCode,
 		"aggregateCid", respData.AggregateCid.String(),
 		"repFactor", reqData.ReplicationFactor,
-		"deadline", reqData.DealStartTime,
+		"replicationDeadline", reqData.ReplicationMaxDeadline,
+		"individualProposalDeadlineHours", reqData.IndividualProposalDeadlineHours,
 	)
 
 	return nil

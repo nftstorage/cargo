@@ -8,8 +8,9 @@ aggregate-location-template = "https://cargo.web3.storage/deal-cars/{{.Aggregate
 
 bidbot-api = "..."
 bidbot-token = "..."
-bidbot-deadline-hours = 48
 bidbot-replication-factor = 5
+bidbot-piece-replication-deadline-days = 3
+bidbot-individual-proposal-deadline-hours = 24
 
 prometheus_push_url="..."
 prometheus_push_user="..."

@@ -104,12 +104,17 @@ var globalFlags = []cli.Flag{
 		Hidden:      true,
 	}),
 	altsrc.NewIntFlag(&cli.IntFlag{
-		Name:        "bidbot-deadline-hours",
+		Name:        "bidbot-replication-factor",
 		DefaultText: "  {{ private, read from config file }}  ",
 		Hidden:      true,
 	}),
 	altsrc.NewIntFlag(&cli.IntFlag{
-		Name:        "bidbot-replication-factor",
+		Name:        "bidbot-piece-replication-deadline-days",
+		DefaultText: "  {{ private, read from config file }}  ",
+		Hidden:      true,
+	}),
+	altsrc.NewIntFlag(&cli.IntFlag{
+		Name:        "bidbot-individual-proposal-deadline-hours",
 		DefaultText: "  {{ private, read from config file }}  ",
 		Hidden:      true,
 	}),
