@@ -508,9 +508,7 @@ func aggregationCandidates(ctx context.Context) ([]pendingDag, bool, int, error)
 	seenDags := cid.NewSet()
 	seenSources := make(map[int64]struct{})
 	pendingDags := make([]pendingDag, 0, 256<<10)
-
-	forceCutoff := time.Now().Add(-1 * time.Hour * time.Duration(forceAgeHours))
-	var forceTimeboxedAggregation bool
+	var oldestPending *pendingDag
 
 	for rows.Next() {
 		var pending pendingDag
@@ -525,8 +523,8 @@ func aggregationCandidates(ctx context.Context) ([]pendingDag, bool, int, error)
 			return nil, false, 0, err
 		}
 
-		if forceAgeHours > 0 {
-			forceTimeboxedAggregation = forceTimeboxedAggregation || (pending.timeStamp.Before(forceCutoff))
+		if oldestPending == nil || pending.timeStamp.Before(oldestPending.timeStamp) {
+			oldestPending = &pending
 		}
 
 		seenSources[pending.srcid] = struct{}{}
@@ -538,6 +536,19 @@ func aggregationCandidates(ctx context.Context) ([]pendingDag, bool, int, error)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, false, 0, err
+	}
+
+	var forceTimeboxedAggregation bool
+	if oldestPending != nil && forceAgeHours > 0 {
+		if oldestPending.timeStamp.Before(time.Now().Add(-1 * time.Hour * time.Duration(forceAgeHours))) {
+			forceTimeboxedAggregation = true
+			log.Infof(
+				"forcing time-boxed aggregation: entry %s timestamped %s is older than requested %d hour cutoff",
+				oldestPending.aggentry.RootCid,
+				oldestPending.timeStamp,
+				forceAgeHours,
+			)
+		}
 	}
 
 	return pendingDags, forceTimeboxedAggregation, len(seenSources), nil
