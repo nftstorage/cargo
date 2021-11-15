@@ -385,19 +385,12 @@ var aggregateDags = &cli.Command{
 			WITH dag_candidates AS (
 				SELECT
 						ae.cid_v1,
-						d.size_actual,
-						COUNT(*) AS replica_count
+						d.size_actual
 					FROM cargo.aggregate_entries ae
-					JOIN cargo.dags d
-						ON ae.cid_v1 = d.cid_v1
-					LEFT JOIN cargo.refs r
-						ON ae.cid_v1 = r.ref_cid
+					JOIN cargo.dags d USING ( cid_v1 )
 					LEFT JOIN cargo.deals de -- this inflates the replica_count, conflating 0 with 1 ( always 1 ), which is ok
 						ON de.aggregate_cid = ae.aggregate_cid AND de.status != 'terminated'
 				WHERE
-					-- not part of anything else
-					r.ref_cid IS NULL
-						AND
 					-- don't go with big dags, don't risk it
 					d.size_actual > 0 AND d.size_actual < $1
 						AND
@@ -414,7 +407,7 @@ var aggregateDags = &cli.Command{
 							( s.weight IS NULL OR s.weight >= 0 )
 					)
 				GROUP BY ( ae.cid_v1, d.size_actual )
-				ORDER BY replica_count
+				ORDER BY COUNT(*)
 				LIMIT $2
 			)
 			SELECT
@@ -422,6 +415,9 @@ var aggregateDags = &cli.Command{
 					d.size_actual,
 					( SELECT 1+COUNT(*) FROM cargo.refs sr WHERE sr.cid_v1 = d.cid_v1 ) AS node_count
 				FROM dag_candidates d
+				LEFT JOIN cargo.refs r
+					ON d.cid_v1 = r.ref_cid
+			WHERE r.ref_cid IS NULL -- not part of anything else
 			ORDER BY RANDOM()
 			`,
 			targetMinSizeHard,
