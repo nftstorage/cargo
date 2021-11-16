@@ -11,7 +11,6 @@ GOLOG_LOG_FMT=json
 # Everything fires every 5 mins: if another process is running, the lock is silently observed without logging anything
 */5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_get-new-dags-w3s.log.ndjson  $HOME/dagcargo/bin/dagcargo_cron get-new-dags --project 0 --project 1
 */5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_get-new-dags-nfts.log.ndjson $HOME/dagcargo/bin/dagcargo_cron get-new-dags --project 2
-*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_export-status.log.ndjson     $HOME/dagcargo/bin/dagcargo_cron export-status
 */5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_track-deals.log.ndjson       $HOME/dagcargo/bin/dagcargo_cron track-deals
 * * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_analyze-dags.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron analyze-dags --prepinned-only
 44 * * * *  $HOME/dagcargo/maint/log_and_run.bash cron_aggregate-dags.log.ndjson    $HOME/dagcargo/bin/dagcargo_cron aggregate-dags --skip-pinning --unpin-sources --export-dir ~/CAR_DATA

@@ -62,20 +62,6 @@ var globalFlags = []cli.Flag{
 		Hidden:      true,
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
-		Name:   "fauna-api",
-		Hidden: true,
-	}),
-	altsrc.NewStringFlag(&cli.StringFlag{
-		Name:        "fauna-token-w3s-prod",
-		DefaultText: "  {{ private, read from config file }}  ",
-		Hidden:      true,
-	}),
-	altsrc.NewStringFlag(&cli.StringFlag{
-		Name:        "fauna-token-w3s-stage",
-		DefaultText: "  {{ private, read from config file }}  ",
-		Hidden:      true,
-	}),
-	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "prometheus_push_url",
 		DefaultText: "  {{ private, read from config file }}  ",
 		Hidden:      true,
@@ -228,7 +214,6 @@ func main() {
 			analyzeDags,
 			aggregateDags,
 			trackDeals,
-			exportStatus,
 			pushMetrics,
 		},
 	}).RunContext(ctx, os.Args)

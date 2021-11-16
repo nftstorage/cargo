@@ -14,7 +14,6 @@ import (
 	filtypes "github.com/filecoin-project/lotus/chain/types"
 	filactors "github.com/filecoin-project/specs-actors/actors/builtin"
 	"github.com/hashicorp/go-retryablehttp"
-	"github.com/hasura/go-graphql-client"
 	"github.com/ipfs/go-cid"
 	ipfsapi "github.com/ipfs/go-ipfs-api"
 	logging "github.com/ipfs/go-log/v2"
@@ -129,19 +128,6 @@ func lotusLookbackTipset(cctx *cli.Context, api *lotusapi.FullNodeStruct) (*filt
 	}
 
 	return tipsetAtLookback, nil
-}
-
-func faunaClient(cctx *cli.Context, projectLabel string) (*graphql.Client, error) {
-	optName := "fauna-token-" + projectLabel
-	bearer := cctx.String(optName)
-	if bearer == "" {
-		return nil, xerrors.Errorf("config '%s' is not set", optName)
-	}
-
-	return graphql.NewClient(
-		cctx.String("fauna-api"),
-		retryingClient(bearer),
-	), nil
 }
 
 func retryingClient(bearerToken string) *http.Client {

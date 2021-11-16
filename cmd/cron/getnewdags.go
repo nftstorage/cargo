@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
@@ -34,29 +33,6 @@ type dagSourceEntry struct {
 
 	sourceLabel string
 	cidV1       cid.Cid
-}
-
-// these two are the structs placed in the corresponding `details` JSONB
-type dagSourceMeta struct {
-	GithubID      json.Number `json:"github_id,omitempty" graphql:"github"`
-	Name          string      `json:"name,omitempty"`
-	Email         string      `json:"email,omitempty"`
-	PublicAddress string      `json:"public_address,omitempty"` // FIXME why do we have this? SELECT * FROM public.user WHERE public_address IS NOT NULL AND public_address != SUBSTRING( magic_link_id, 10 )
-	MagicLinkID   string      `json:"magic_link_id,omitempty" graphql:"issuer"`
-	Picture       string      `json:"picture,omitempty"`
-	UsedStorage   int64       `json:"storage_used,omitempty,string"`
-	Nickname      string      `json:"nickname,omitempty" graphql:""`
-}
-type dagSourceEntryMeta struct {
-	OriginalCid string       `json:"original_cid"`
-	Label       string       `json:"label,omitempty"`
-	UploadType  string       `json:"upload_type,omitempty"`
-	TokenUsed   *sourceToken `json:"token_used,omitempty"`
-	PinnedAt    *time.Time   `json:"pin_reported_at,omitempty"`
-}
-type sourceToken struct {
-	ID    string `json:"id,omitempty" graphql:"_id"`
-	Label string `json:"label,omitempty" graphql:"name"`
 }
 
 var getNewDags = &cli.Command{
@@ -130,22 +106,6 @@ var getNewDags = &cli.Command{
 			go func() {
 				defer wg.Done()
 				err := getPgDags(cctx, p, cutoffTime, knownCids, ownAggregates)
-				if err != nil {
-					errs <- err
-				}
-			}()
-		}
-
-		for i := range faunaProjects {
-			p := faunaProjects[i]
-			if _, requested := requestedProjects[p.id]; !requested {
-				continue
-			}
-
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				err := getFaunaDags(cctx, p, cutoffTime, knownCids, ownAggregates)
 				if err != nil {
 					errs <- err
 				}

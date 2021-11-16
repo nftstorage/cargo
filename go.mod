@@ -13,7 +13,6 @@ require (
 	github.com/filecoin-project/lotus v1.11.1
 	github.com/filecoin-project/specs-actors v0.9.14
 	github.com/hashicorp/go-retryablehttp v0.7.0
-	github.com/hasura/go-graphql-client v0.2.0
 	github.com/ipfs/go-blockservice v0.1.7
 	github.com/ipfs/go-cid v0.1.0
 	github.com/ipfs/go-fs-lock v0.0.7

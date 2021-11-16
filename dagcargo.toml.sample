@@ -15,7 +15,3 @@ bidbot-individual-proposal-deadline-hours = 24
 prometheus_push_url="..."
 prometheus_push_user="..."
 prometheus_push_pass="..."
-
-fauna-api = "https://graphql.fauna.com/graphql"
-fauna-token-w3s-prod = "..."
-fauna-token-w3s-stage = "..."
