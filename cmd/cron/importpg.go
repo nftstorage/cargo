@@ -10,17 +10,111 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+const (
+	nftsUploadAuthkeyFkColumn = `key_id`
+	nftsDetailsUpload         = `
+		JSONB_STRIP_NULLS( JSONB_BUILD_OBJECT(
+			'original_cid', ds.source_cid,
+			'mime_type', CASE WHEN ds.mime_type = '' THEN NULL ELSE ds.mime_type END,
+			'upload_type', ds.type,
+			'label', CASE WHEN ds.name = '' THEN NULL ELSE ds.name END,
+			'files', CASE WHEN ds.files = JSONB('[]') THEN NULL ELSE ds.files END,
+			'origins', ds.origins,
+			'meta', ds.meta,
+			'token_used', CASE WHEN ds.key_id IS NULL THEN NULL ELSE JSONB_BUILD_OBJECT(
+				'id', ds.key_id,
+				'label', k.name
+			) END,
+			'pin_reported_at', (
+				SELECT MIN(p.updated_at)
+					FROM pin p
+				WHERE
+					p.content_cid = d.cid
+						AND
+					p.status = 'Pinned'
+						AND
+					p.service != 'Pinata'
+			)
+		) )
+	`
+
+	w3sUploadAuthkeyFkColumn = `auth_key_id`
+	w3sDetailsUpload         = `
+		JSONB_STRIP_NULLS( JSONB_BUILD_OBJECT(
+			'original_cid', ds.source_cid,
+			'upload_type', ds.type,
+			'label', CASE WHEN ds.name = '' THEN NULL ELSE ds.name END,
+			'token_used', CASE WHEN ds.auth_key_id IS NULL THEN NULL ELSE JSONB_BUILD_OBJECT(
+				'id', ds.auth_key_id,
+				'label', k.name
+			) END,
+			'pin_reported_at', (
+				SELECT MIN(p.updated_at)
+					FROM pin p
+				WHERE
+					p.content_cid = d.cid
+						AND
+					p.status = 'Pinned'
+			)
+		) )
+	`
+
+	nftsDetailsUser = `
+		JSONB_STRIP_NULLS( JSONB_BUILD_OBJECT(
+			'public_address', s.public_address, -- FIXME should go away, same as magic_link_id
+			'github_id', COALESCE( s.github->>'userHandle', SUBSTRING( s.github_id, 'github\|([0-9]+)') )::BIGINT,
+			'email', s.email,
+			'magic_link_id', CASE WHEN s.magic_link_id = '' THEN NULL ELSE s.magic_link_id END,
+			'name', CASE WHEN s.name = '' THEN NULL ELSE s.name END,
+			'nickname', SUBSTRING( s.github->'userInfo'->>'profile', '([^/]+)$' ),
+			'picture', CASE WHEN s.picture = '' THEN NULL ELSE s.picture END
+		) )
+	`
+	w3sDetailsUser = `
+		JSONB_STRIP_NULLS( JSONB_BUILD_OBJECT(
+			'public_address', s.public_address, -- FIXME should go away, same as magic_link_id
+			'github_id', s.github::BIGINT,
+			'email', s.email,
+			'magic_link_id', CASE WHEN s.issuer = '' THEN NULL ELSE s.issuer END,
+			'name', CASE WHEN s.name = '' THEN NULL ELSE s.name END,
+			'picture', CASE WHEN s.picture = '' THEN NULL ELSE s.picture END
+		) )
+	`
+)
+
 type pgProject struct {
-	id           int
-	label        string
-	pgConnString string
+	id                                int
+	label                             string
+	pgConnString                      string
+	templatedSQLDetailsUser           string
+	templatedSQLDetailsUpload         string
+	templatedSQLUploadAuthkeyFkColumn string
 }
 
 var pgProjects = []pgProject{
 	{
-		id:           2,
-		label:        "nft-storage",
-		pgConnString: "service=nft-storage-ro",
+		id:                                0,
+		label:                             "web3.storage-stage",
+		pgConnString:                      "service=web3-storage-stage-ro",
+		templatedSQLDetailsUser:           w3sDetailsUser,
+		templatedSQLUploadAuthkeyFkColumn: w3sUploadAuthkeyFkColumn,
+		templatedSQLDetailsUpload:         w3sDetailsUpload,
+	},
+	{
+		id:                                1,
+		label:                             "web3.storage-prod",
+		pgConnString:                      "service=web3-storage-ro",
+		templatedSQLDetailsUser:           w3sDetailsUser,
+		templatedSQLUploadAuthkeyFkColumn: w3sUploadAuthkeyFkColumn,
+		templatedSQLDetailsUpload:         w3sDetailsUpload,
+	},
+	{
+		id:                                2,
+		label:                             "nft.storage-prod",
+		pgConnString:                      "service=nft-storage-ro",
+		templatedSQLDetailsUser:           nftsDetailsUser,
+		templatedSQLUploadAuthkeyFkColumn: nftsUploadAuthkeyFkColumn,
+		templatedSQLDetailsUpload:         nftsDetailsUpload,
 	},
 }
 
@@ -58,65 +152,48 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 	// first pull all dag rows, store in ram, users come second
 	dagRows, err := srcDb.Query(
 		ctx,
-		`
-		SELECT
-				ds.user_id::TEXT AS source_label,
-				ds.content_cid AS cid_v1,
-				ds.source_cid AS source_key,
-				d.dag_size AS size_claimed,
-				ds.inserted_at AS entry_created,
-				ds.deleted_at AS entry_removed,
-				GREATEST(
-					ds.updated_at,
-					(
-						SELECT MAX(p.updated_at)
-							FROM pin p
-						WHERE
-							p.content_cid = ds.content_cid
-					)
-				) AS entry_last_updated,
-
-				JSONB_STRIP_NULLS( JSONB_BUILD_OBJECT(
-					'original_cid', ds.source_cid,
-					'mime_type', CASE WHEN ds.mime_type = '' THEN NULL ELSE ds.mime_type END,
-					'upload_type', ds.type,
-					'label', CASE WHEN ds.name = '' THEN NULL ELSE ds.name END,
-					'files', CASE WHEN ds.files = JSONB('[]') THEN NULL ELSE ds.files END,
-					'origins', ds.origins,
-					'meta', ds.meta,
-					'token_used', CASE WHEN ds.key_id IS NULL THEN NULL ELSE JSONB_BUILD_OBJECT(
-						'id', ds.key_id,
-						'label', k.name
-					) END,
-					'pin_reported_at', (
-							SELECT MIN(p.updated_at)
+		fmt.Sprintf(
+			`
+			SELECT
+					ds.user_id::TEXT AS source_label,
+					d.cid AS cid_v1,
+					ds.source_cid AS source_key,
+					d.dag_size AS size_claimed,
+					ds.inserted_at AS entry_created,
+					ds.deleted_at AS entry_removed,
+					GREATEST(
+						ds.updated_at,
+						(
+							SELECT MAX(p.updated_at)
 								FROM pin p
 							WHERE
-								p.content_cid = ds.content_cid
-									AND
-								p.service = 'IpfsCluster'
+								p.content_cid = d.cid
 									AND
 								p.status = 'Pinned'
-					)
-				) ) AS details
-
-			FROM upload ds
-			JOIN content d ON ds.content_cid = d.cid
-			LEFT JOIN auth_key k ON ds.key_id = k.id
-		WHERE
-			(
+						)
+					) AS entry_last_updated,
+					%s AS details
+				FROM upload ds
+				JOIN content d ON ds.content_cid = d.cid
+				LEFT JOIN auth_key k ON ds.%s = k.id
+			WHERE
 				ds.updated_at > $1
-					OR
-				EXISTS (
-					SELECT 42
-						FROM pin
-					WHERE
-						pin.updated_at > $1
-							AND
-						pin.content_cid = ds.content_cid
-				)
-			)
-		`,
+				-- FIXME: commented out until we figure out wy w3s db is so large...
+				--		OR
+				--	EXISTS (
+				--		SELECT 42
+				--			FROM pin
+				--		WHERE
+				--			pin.content_cid = d.cid
+				--				AND
+				--			pin.status = 'Pinned'
+				--				AND
+				--			pin.updated_at > $1
+				--	)
+			`,
+			p.templatedSQLDetailsUpload,
+			p.templatedSQLUploadAuthkeyFkColumn,
+		),
 		cutoff,
 	)
 	if err != nil {
@@ -195,25 +272,20 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 	}
 	srcRows, err := srcDb.Query(
 		ctx,
-		`
-		SELECT
-				u.id::TEXT AS source_label,
-				u.inserted_at AS entry_created,
-				JSONB_STRIP_NULLS( JSONB_BUILD_OBJECT(
-					'public_address', u.public_address, -- FIXME should go away
-					'github_id', COALESCE( u.github->>'userHandle', SUBSTRING( u.github_id, 'github\|([0-9]+)') )::BIGINT,
-					'email', u.email,
-					'magic_link_id', CASE WHEN u.magic_link_id = '' THEN NULL ELSE u.magic_link_id END,
-					'name', CASE WHEN u.name = '' THEN NULL ELSE u.name END,
-					'nickname', SUBSTRING( github->'userInfo'->>'profile', '([^/]+)$' ),
-					'picture', CASE WHEN u.picture = '' THEN NULL ELSE u.picture END
-				) ) AS details
-			FROM public.user u
-		WHERE
-			u.updated_at > $1
-				OR
-			u.id::TEXT = ANY( $2 )
-		`,
+		fmt.Sprintf(
+			`
+			SELECT
+					s.id::TEXT AS source_label,
+					s.inserted_at AS entry_created,
+					%s AS details
+				FROM public.user s
+			WHERE
+				s.updated_at > $1
+					OR
+				s.id::TEXT = ANY( $2 )
+			`,
+			p.templatedSQLDetailsUser,
+		),
 		cutoff,
 		toGetSrcLabels,
 	)
