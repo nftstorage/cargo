@@ -5,7 +5,7 @@ set -o pipefail
 
 export LANG=C
 
-export SWEEP_MOST_AGE="${SWEEP_MOST_AGE:-30 days}"
+export SWEEP_MOST_AGE="${SWEEP_MOST_AGE:-90 days}"
 export SWEEP_LEAST_AGE="${SWEEP_LEAST_AGE:-0 days}"
 export SWEEP_EXTRA_COND="${SWEEP_EXTRA_COND:-}"
 export SWEEP_TIMEOUT_SEC="${SWEEP_TIMEOUT_SEC:-900}"
@@ -22,7 +22,7 @@ if [[ ! -t 0 ]] && current_requested=$( cat | sort -u ) && [[ -n "$current_reque
   SWEEP_LEAST_AGE="N/A"
   SWEEP_EXTRA_COND="N/A"
 
-  say "Got $( wc -l <<<"$current_requested" ) items on STDIN"
+  say "Got $( wc -w <<<"$current_requested" ) items on STDIN"
 
 else
 
@@ -49,9 +49,13 @@ else
     ORDER BY cid_v1
   " )"
 
-  say "Got $( wc -l <<<"$current_requested" ) items from RDBMS"
+  say "Got $( wc -w <<<"$current_requested" ) items from RDBMS"
 
 fi
+
+
+[[ "$( wc -w <<<"$current_requested" )" == 0 ]] && say "Nothing to do $rundesc" && exit 0
+
 
 current_pins="$( curl -sXPOST "$SWEEP_IPFSAPI/api/v0/pin/ls?type=recursive" | jq -r '.Keys | to_entries | .[] | .key' | sort -u )"
 [[ -z "$current_pins" ]] && say "IPFS pin ls returned an empty set" && exit 0
@@ -66,14 +70,26 @@ cids_pending="$(
 
 rundesc="[[ SWEEP_TIMEOUT_SEC:'$SWEEP_TIMEOUT_SEC' SWEEP_CONCURRENCY:'$SWEEP_CONCURRENCY' SWEEP_MOST_AGE:'$SWEEP_MOST_AGE' SWEEP_LEAST_AGE:'$SWEEP_LEAST_AGE' SWEEP_EXTRA_COND:\"$SWEEP_EXTRA_COND\" ]]"
 
-pending_count="$( wc -l <<<"$cids_pending" )"
+pending_count="$( wc -w <<<"$cids_pending" )"
 [[ "$pending_count" == 0 ]] && say "Nothing to do $rundesc" && exit 0
 
 pinsdonefn="$(mktemp /dev/shm/.pin_sweep-run.XXXXXX)"
-dunnn() { say "Attempt finished, pinned $( stat --printf="%s" "$pinsdonefn" ) out of $pending_count dags $rundesc\n"; rm -f "$pinsdonefn"; }
+dunnn() { say "Attempt finished, pinned $( <"$pinsdonefn" tr -cd '.' | wc -c ) out of $pending_count dags $rundesc\n"; rm -f "$pinsdonefn"; }
 trap 'dunnn' EXIT
 say "Attempting sweep of $pending_count DAGs $rundesc"
 
-<<<"$cids_pending" xargs -P $SWEEP_CONCURRENCY -n1 -I{} bash -c "curl -m$(( $SWEEP_TIMEOUT_SEC + 5 )) -sXPOST '$SWEEP_IPFSAPI/api/v0/pin/add?progress=false&timeout=${SWEEP_TIMEOUT_SEC}s&arg={}' | jq -r 'try .Pins[]'" \
- | perl -pe '$|=1; s/.*/./s' \
- | tee -a "$pinsdonefn"
+[[ -t 1 ]] && show_progress="true" || show_progress="false"
+<<<"$cids_pending" perl -p -e 's/\s+/\n/g' | xargs -P $SWEEP_CONCURRENCY -n1 -I{} bash -c "curl -m$(( $SWEEP_TIMEOUT_SEC + 5 )) -sNXPOST '$SWEEP_IPFSAPI/api/v0/pin/add?progress=${show_progress}&timeout=${SWEEP_TIMEOUT_SEC}s&arg={}' | perl -pe '$|++; s/\$/ \$\$/'" \
+ | perl -pe '
+   BEGIN { ($|,@anim)=(1,qw(- \ | /)) }
+   s/^\{\}.*//s
+    or
+   s/^\{"Pins".*/".$anim[($ac++)%($#anim+1)]\x08"/se
+    or
+   s/^\{"Progress"(.*)/ $seen{$1}++ ? "" : "$anim[($ac++)%($#anim+1)]\x08" /se
+    or
+   s/^.*"Type":"error".*/"x$anim[($ac++)%($#anim+1)]\x08"/se
+    or
+   s/^.*/"?$anim[($ac++)%($#anim+1)]\x08"/se
+ ' \
+ | ( [[ -t 1 ]] && tee "$pinsdonefn" || cat > "$pinsdonefn" )
