@@ -23,15 +23,28 @@ type cargoMetric struct {
 	name  string
 	help  string
 	query string
+	heavy bool
 }
 
 var workerCount = 24
+var onlyHeavy bool
+var heavyMetricDbTimeoutHours = 2
 
 var pushMetrics = &cli.Command{
 	Usage:  "Push service metrics to external collectors",
 	Name:   "push-metrics",
 	Flags:  []cli.Flag{},
 	Action: pushPrometheusMetrics,
+}
+
+var pushHeavyMetrics = &cli.Command{
+	Usage: "Push only the exceptionally heavy/infrequent metrics to external collectors",
+	Name:  "push-heavy-metrics",
+	Flags: []cli.Flag{},
+	Action: func(cctx *cli.Context) error {
+		onlyHeavy = true
+		return pushPrometheusMetrics(cctx)
+	},
 }
 
 var metricsList = []cargoMetric{
@@ -172,7 +185,7 @@ var metricsList = []cargoMetric{
 		query: `
 			WITH
 				active_sources AS (
-					SELECT * FROM cargo.sources WHERE weight >= 0 OR weight IS NULL
+					SELECT * FROM cargo.sources WHERE weight > 0 OR weight IS NULL
 				),
 				q AS (
 					SELECT s.project, COUNT(*) val
@@ -181,8 +194,6 @@ var metricsList = []cargoMetric{
 						JOIN cargo.dags d USING ( cid_v1 )
 					WHERE
 						d.size_actual IS NULL
-							AND
-						ds.entry_removed IS NULL
 							AND
 						ds.details -> 'pin_reported_at' IS NOT NULL
 					GROUP BY s.project
@@ -193,9 +204,10 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_stored_items_oversized",
-		help: "Count of items larger than a 32GiB sector",
+		heavy: true, // not really heavy but should accompany other metrics that *are*
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_stored_items_oversized",
+		help:  "Count of items larger than a 32GiB sector",
 		query: fmt.Sprintf(
 			`
 			WITH
@@ -221,9 +233,10 @@ var metricsList = []cargoMetric{
 		),
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_stored_items_inactive",
-		help: "Count of items exclusively from inactive sources",
+		heavy: true, // not really heavy but should accompany other metrics that *are*
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_stored_items_inactive",
+		help:  "Count of items exclusively from inactive sources",
 		query: `
 			WITH
 				inactive_sources AS (
@@ -282,9 +295,10 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_stored_bytes_active_deduplicated",
-		help: "Amount of known best-effort-deduplicated bytes stored per project",
+		heavy: true,
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_stored_bytes_active_deduplicated",
+		help:  "Amount of known best-effort-deduplicated bytes stored per project",
 		query: `
 			WITH
 				q AS (
@@ -356,9 +370,10 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_stored_bytes_deleted_deduplicated",
-		help: "Amount of known best-effort-deduplicated bytes retrieved and then marked deleted per project",
+		heavy: true, // not really heavy but should accompany other metrics that *are*
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_stored_bytes_deleted_deduplicated",
+		help:  "Amount of known best-effort-deduplicated bytes retrieved and then marked deleted per project",
 		query: `
 			WITH
 				q AS (
@@ -421,9 +436,10 @@ var metricsList = []cargoMetric{
 	},
 
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_stored_bytes_oversized_deduplicated",
-		help: "Amount of bytes in dags larger than a 32GiB sector",
+		heavy: true, // not really heavy but should accompany other metrics that *are*
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_stored_bytes_oversized_deduplicated",
+		help:  "Amount of bytes in dags larger than a 32GiB sector",
 		query: fmt.Sprintf(
 			`
 			WITH
@@ -467,9 +483,10 @@ var metricsList = []cargoMetric{
 		),
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_stored_bytes_inactive_deduplicated",
-		help: "Amount of bytes in dags exclusively from inactive sources",
+		heavy: true, // not really heavy but should accompany other metrics that *are*
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_stored_bytes_inactive_deduplicated",
+		help:  "Amount of bytes in dags exclusively from inactive sources",
 		query: `
 			WITH
 				inactive_sources AS (
@@ -520,9 +537,10 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		kind: cargoMetricCounter,
-		name: "dagcargo_handled_total_bytes",
-		help: "How many best-effort-deduplicated bytes did the service handle since inception",
+		heavy: true,
+		kind:  cargoMetricCounter,
+		name:  "dagcargo_handled_total_bytes",
+		help:  "How many best-effort-deduplicated bytes did the service handle since inception",
 		query: `
 			SELECT SUM( size_actual )
 				FROM cargo.dags d
@@ -535,9 +553,10 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		kind: cargoMetricCounter,
-		name: "dagcargo_handled_total_blocks",
-		help: "How many unique-by-cid blocks did the service handle since inception",
+		heavy: true,
+		kind:  cargoMetricCounter,
+		name:  "dagcargo_handled_total_blocks",
+		help:  "How many unique-by-cid blocks did the service handle since inception",
 		query: `
 			SELECT
 				(
@@ -598,16 +617,20 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_items_in_active_deals",
-		help: "Count of aggregated items with at least one active deal per project",
+		heavy: true,
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_items_in_active_deals",
+		help:  "Count of aggregated items with at least one active deal per project",
 		query: `
 			WITH
 				q AS (
 					SELECT s.project, COUNT(*) val
 						FROM cargo.sources s
 						JOIN cargo.dag_sources ds USING ( srcid )
+						JOIN cargo.dags d USING ( cid_v1 )
 					WHERE
+						d.size_actual IS NOT NULL
+							AND
 						EXISTS (
 							SELECT 42
 								FROM cargo.aggregate_entries ae, cargo.deals de
@@ -626,9 +649,10 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_bytes_in_active_deals",
-		help: "Amount of per-DAG-deduplicated bytes with at least one active deal per project",
+		heavy: true,
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_bytes_in_active_deals",
+		help:  "Amount of per-DAG-deduplicated bytes with at least one active deal per project",
 		query: `
 			WITH
 				q AS (
@@ -637,6 +661,8 @@ var metricsList = []cargoMetric{
 						JOIN cargo.dag_sources ds USING ( srcid )
 						JOIN cargo.dags d USING ( cid_v1 )
 					WHERE
+						d.size_actual IS NOT NULL
+							AND
 						EXISTS (
 							SELECT 42
 								FROM cargo.aggregate_entries ae, cargo.deals de
@@ -664,7 +690,10 @@ var metricsList = []cargoMetric{
 					SELECT s.project, COUNT(*) val
 						FROM cargo.sources s
 						JOIN cargo.dag_sources ds USING ( srcid )
+						JOIN cargo.dags d USING ( cid_v1 )
 					WHERE
+						d.size_actual IS NOT NULL
+							AND
 						EXISTS (
 							SELECT 42
 								FROM cargo.aggregate_entries ae
@@ -700,6 +729,8 @@ var metricsList = []cargoMetric{
 						JOIN cargo.dag_sources ds USING ( srcid )
 						JOIN cargo.dags d USING ( cid_v1 )
 					WHERE
+						d.size_actual IS NOT NULL
+							AND
 						EXISTS (
 							SELECT 42
 								FROM cargo.aggregate_entries ae
@@ -735,6 +766,8 @@ var metricsList = []cargoMetric{
 						JOIN cargo.dag_sources ds USING ( srcid )
 						JOIN cargo.dags d USING ( cid_v1 )
 					WHERE
+						d.size_actual IS NOT NULL
+							AND
 						EXISTS (
 							SELECT 42
 								FROM cargo.aggregate_entries ae
@@ -858,9 +891,10 @@ func init() {
 		for _, days := range []int{1, 7} {
 
 			metricsList = append(metricsList, cargoMetric{
-				kind: cargoMetricGauge,
-				name: fmt.Sprintf("dagcargo_project_item_minutes_to_aggregate_%dday_%dpct", days, pct),
-				help: fmt.Sprintf("%d percentile minutes to first aggregate inclusion for entries added in the past %d days", pct, days),
+				heavy: true,
+				kind:  cargoMetricGauge,
+				name:  fmt.Sprintf("dagcargo_project_item_minutes_to_aggregate_%dday_%dpct", days, pct),
+				help:  fmt.Sprintf("%d percentile minutes to first aggregate inclusion for entries added in the past %d days", pct, days),
 				query: fmt.Sprintf(
 					`
 					WITH
@@ -910,9 +944,10 @@ func init() {
 			})
 
 			metricsList = append(metricsList, cargoMetric{
-				kind: cargoMetricGauge,
-				name: fmt.Sprintf("dagcargo_project_item_minutes_to_deal_published_%dday_%dpct", days, pct),
-				help: fmt.Sprintf("%d percentile minutes to first published deal for entries added in the past %d days", pct, days),
+				heavy: true,
+				kind:  cargoMetricGauge,
+				name:  fmt.Sprintf("dagcargo_project_item_minutes_to_deal_published_%dday_%dpct", days, pct),
+				help:  fmt.Sprintf("%d percentile minutes to first published deal for entries added in the past %d days", pct, days),
 				query: fmt.Sprintf(
 					`
 					WITH
@@ -966,9 +1001,10 @@ func init() {
 			})
 
 			metricsList = append(metricsList, cargoMetric{
-				kind: cargoMetricGauge,
-				name: fmt.Sprintf("dagcargo_project_item_minutes_to_deal_active_%dday_%dpct", days, pct),
-				help: fmt.Sprintf("%d percentile minutes to first active deal for entries added in the past %d days", pct, days),
+				heavy: true,
+				kind:  cargoMetricGauge,
+				name:  fmt.Sprintf("dagcargo_project_item_minutes_to_deal_active_%dday_%dpct", days, pct),
+				help:  fmt.Sprintf("%d percentile minutes to first active deal for entries added in the past %d days", pct, days),
 				query: fmt.Sprintf(
 					`
 					WITH
@@ -1037,7 +1073,9 @@ func pushPrometheusMetrics(cctx *cli.Context) error {
 
 	jobQueue := make(chan cargoMetric, len(metricsList))
 	for _, m := range metricsList {
-		jobQueue <- m
+		if onlyHeavy == m.heavy {
+			jobQueue <- m
+		}
 	}
 	close(jobQueue)
 
@@ -1098,11 +1136,17 @@ func pushPrometheusMetrics(cctx *cli.Context) error {
 func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, error) {
 
 	t0 := time.Now()
-	tx, err := cargoDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
+	tx, err := cargoDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(context.Background()) //nolint:errcheck
+
+	if onlyHeavy {
+		if _, err = tx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (time.Duration(heavyMetricDbTimeoutHours)*time.Hour).Milliseconds())); err != nil {
+			return nil, err
+		}
+	}
 
 	rows, err := tx.Query(ctx, m.query)
 	if err != nil {

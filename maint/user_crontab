@@ -15,6 +15,7 @@ GOLOG_LOG_FMT=json
 * * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_analyze-dags.log.ndjson        $HOME/dagcargo/bin/dagcargo_cron analyze-dags --prepinned-only
 44 * * * *  $HOME/dagcargo/maint/log_and_run.bash cron_aggregate-dags.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron aggregate-dags --skip-pinning --unpin-sources --export-dir ~/CAR_DATA
 * * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_push-metrics.log.ndjson        $HOME/dagcargo/bin/dagcargo_cron push-metrics
+* * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_push-metrics-heavy.log.ndjson  $HOME/dagcargo/bin/dagcargo_cron --cargo-pg-connstring=service=cargo-reporting push-heavy-metrics
 
 # helper-sweeps: a set of "only pin, we will do the rest" jobs that help with:
 # - breaking up the outstanding queue and prioritizing it properly

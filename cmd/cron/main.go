@@ -215,6 +215,7 @@ func main() {
 			aggregateDags,
 			trackDeals,
 			pushMetrics,
+			pushHeavyMetrics,
 		},
 	}).RunContext(ctx, os.Args)
 
