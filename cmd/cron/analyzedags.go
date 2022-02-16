@@ -331,12 +331,19 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 
 	currentState.Store("API (/dag/stat + /refs) " + rootCid.String())
 	go func() {
-		retCh <- api.Request("dag/stat").Arguments(rootCid.String()).Option("progress", "false").Option("offline", true).Exec(ctx, ds)
+		retCh <- api.Request("dag/stat").Arguments(rootCid.String()).
+			Option("progress", "false").
+			Option("offline", true).
+			Exec(ctx, ds)
 	}()
 	go func() {
 		retCh <- func() error {
 
-			resp, err := api.Request("refs").Arguments(rootCid.String()).Option("unique", "true").Option("recursive", "true").Option("offline", true).Send(ctx)
+			resp, err := api.Request("refs").Arguments(rootCid.String()).
+				Option("unique", "true").
+				Option("recursive", "true").
+				Option("offline", true).
+				Send(ctx)
 			if err != nil {
 				return err
 			}
@@ -427,7 +434,7 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 
 			if cctx.Bool("unpin-after-analysis") {
 				currentState.Store(fmt.Sprintf("pin/rm %s", rootCid.String()))
-				unpinErr := api.Request("pin/rm").Arguments(rootCid.String()).Exec(context.Background(), nil)
+				unpinErr := api.Request("pin/rm").Arguments(rootCid.String()).Option("offline", true).Exec(context.Background(), nil)
 				if unpinErr != nil {
 					log.Warnf("unpinning of %s after successful analysis failed: %s", rootCid.String(), unpinErr)
 				} else {

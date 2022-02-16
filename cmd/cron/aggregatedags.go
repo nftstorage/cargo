@@ -488,16 +488,16 @@ func aggregationCandidates(ctx context.Context) ([]pendingDag, bool, int, error)
 		masterListSQL = `SELECT * FROM ` + mvName
 	}
 
-	rotx, err := cargoDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
+	rotx, err := cargoDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, false, 0, err
 	}
 	defer rotx.Rollback(context.Background()) //nolint:errcheck
 
-	// _, err = rotx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (2*time.Hour).Milliseconds()))
-	// if err != nil {
-	// 	return nil, 0, err
-	// }
+	_, err = rotx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (2*time.Hour).Milliseconds()))
+	if err != nil {
+		return nil, false, 0, err
+	}
 
 	rows, err := rotx.Query(ctx, masterListSQL)
 	if err != nil {
@@ -771,6 +771,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	}
 
 	// Add all the "free" parts that happen to be included via larger dags
+	log.Infof("determining included-dags for aggregate formed from %d initial roots", len(initialRoots))
 	rows, err := cargoDb.Query(
 		ctx,
 		`
@@ -867,7 +868,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 		defer func() {
 			if toUnpinOnError != "" {
 				msg := fmt.Sprintf("unpinning %s after unsuccessful export", toUnpinOnError)
-				err := api.Request("pin/rm").Arguments(toUnpinOnError).Exec(context.Background(), nil) // non-interruptable context
+				err := api.Request("pin/rm").Arguments(toUnpinOnError).Option("offline", true).Exec(context.Background(), nil) // non-interruptable context
 				if err != nil {
 					msg += " failed: " + err.Error()
 				}
@@ -1128,7 +1129,7 @@ watchdog:
 					}
 					// nearly everything would have been unpinned already, so no error checks
 					// sadly this is somewhat slow, but oh well... better be extra proactive
-					api.Request("pin/rm").Arguments(cidStr).Exec(ctx, nil) //nolint:errcheck
+					api.Request("pin/rm").Arguments(cidStr).Option("offline", true).Exec(ctx, nil) //nolint:errcheck
 				}
 			}()
 		}
@@ -1272,6 +1273,7 @@ func writeoutBlocks(cctx *cli.Context, bs blockstore.Blockstore) error {
 					// copied entirety of ipfsapi.BlockPut() to be able to pass in our own ctx 🤮
 					res := new(struct{ Key string })
 					err = api.Request("block/put").
+						Option("offline", true).
 						Option("format", cid.CodecToStr[c.Prefix().Codec]).
 						Option("mhtype", multihash.Codes[c.Prefix().MhType]).
 						Option("mhlen", c.Prefix().MhLength).
