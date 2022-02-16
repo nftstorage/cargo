@@ -59,6 +59,58 @@ const (
 		) )
 	`
 
+	w3sPsaUnion = `UNION ALL (
+		SELECT
+				k.user_id::TEXT AS source_label,
+				d.cid AS cid_v1,
+				ds.id AS source_key,
+				d.dag_size AS size_claimed,
+				ds.inserted_at AS entry_created,
+				ds.deleted_at AS entry_removed,
+				GREATEST(
+					ds.updated_at,
+					(
+						SELECT MAX(p.updated_at)
+							FROM pin p
+						WHERE
+							p.content_cid = d.cid
+					)
+				) AS entry_last_updated,
+				JSONB_STRIP_NULLS( JSONB_BUILD_OBJECT(
+					'original_cid', ds.source_cid,
+					'upload_type', 'Remote',
+					'label', CASE WHEN ds.name = '' THEN NULL ELSE ds.name END,
+					'token_used', JSONB_BUILD_OBJECT(
+						'id', ds.auth_key_id,
+						'label', k.name
+					),
+					'origins', ds.origins,
+					'meta', ds.meta,
+					'pin_reported_at', (
+						SELECT MIN(p.updated_at)
+							FROM pin p
+						WHERE
+							p.content_cid = d.cid
+								AND
+							p.status = 'Pinned'
+					)
+				) ) AS details
+			FROM psa_pin_request ds
+			JOIN content d ON ds.content_cid = d.cid
+			JOIN auth_key k ON ds.auth_key_id = k.id
+		WHERE
+			ds.updated_at > $1
+				OR
+			EXISTS (
+				SELECT 42
+					FROM pin
+				WHERE
+					pin.content_cid = d.cid
+						AND
+					pin.updated_at > $1
+			)
+	)`
+
 	nftsDetailsUser = `
 		JSONB_STRIP_NULLS( JSONB_BUILD_OBJECT(
 			'public_address', s.public_address, -- FIXME should go away, same as magic_link_id
@@ -89,6 +141,7 @@ type pgProject struct {
 	templatedSQLDetailsUser           string
 	templatedSQLDetailsUpload         string
 	templatedSQLUploadAuthkeyFkColumn string
+	templatedSQLPsaUnion              string
 }
 
 var pgProjects = []pgProject{
@@ -99,6 +152,7 @@ var pgProjects = []pgProject{
 		templatedSQLDetailsUser:           w3sDetailsUser,
 		templatedSQLUploadAuthkeyFkColumn: w3sUploadAuthkeyFkColumn,
 		templatedSQLDetailsUpload:         w3sDetailsUpload,
+		templatedSQLPsaUnion:              w3sPsaUnion,
 	},
 	{
 		id:                                1,
@@ -107,6 +161,7 @@ var pgProjects = []pgProject{
 		templatedSQLDetailsUser:           w3sDetailsUser,
 		templatedSQLUploadAuthkeyFkColumn: w3sUploadAuthkeyFkColumn,
 		templatedSQLDetailsUpload:         w3sDetailsUpload,
+		templatedSQLPsaUnion:              w3sPsaUnion,
 	},
 	{
 		id:                                2,
@@ -154,44 +209,44 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 		ctx,
 		fmt.Sprintf(
 			`
-			SELECT
-					ds.user_id::TEXT AS source_label,
-					d.cid AS cid_v1,
-					ds.source_cid AS source_key,
-					d.dag_size AS size_claimed,
-					ds.inserted_at AS entry_created,
-					ds.deleted_at AS entry_removed,
-					GREATEST(
-						ds.updated_at,
-						(
-							SELECT MAX(p.updated_at)
-								FROM pin p
-							WHERE
-								p.content_cid = d.cid
-									AND
-								p.status = 'Pinned'
-						)
-					) AS entry_last_updated,
-					%s AS details
-				FROM upload ds
-				JOIN content d ON ds.content_cid = d.cid
-				LEFT JOIN auth_key k ON ds.%s = k.id
-			WHERE
-				ds.updated_at > $1
-					OR
-				EXISTS (
-					SELECT 42
-						FROM pin
-					WHERE
-						pin.content_cid = d.cid
-							AND
-						pin.status = 'Pinned'
-							AND
-						pin.updated_at > $1
-				)
+			(
+				SELECT
+						ds.user_id::TEXT AS source_label,
+						d.cid AS cid_v1,
+						ds.source_cid AS source_key,
+						d.dag_size AS size_claimed,
+						ds.inserted_at AS entry_created,
+						ds.deleted_at AS entry_removed,
+						GREATEST(
+							ds.updated_at,
+							(
+								SELECT MAX(p.updated_at)
+									FROM pin p
+								WHERE
+									p.content_cid = d.cid
+							)
+						) AS entry_last_updated,
+						%s AS details
+					FROM upload ds
+					JOIN content d ON ds.content_cid = d.cid
+					LEFT JOIN auth_key k ON ds.%s = k.id
+				WHERE
+					ds.updated_at > $1
+						OR
+					EXISTS (
+						SELECT 42
+							FROM pin
+						WHERE
+							pin.content_cid = d.cid
+								AND
+							pin.updated_at > $1
+					)
+			)
+			%s
 			`,
 			p.templatedSQLDetailsUpload,
 			p.templatedSQLUploadAuthkeyFkColumn,
+			p.templatedSQLPsaUnion,
 		),
 		cutoff,
 	)
