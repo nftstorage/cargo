@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS cargo.dags (
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
   entry_analyzed TIMESTAMP WITH TIME ZONE,
   entry_last_updated TIMESTAMP WITH TIME ZONE NOT NULL,
+  meta JSONB,
   CONSTRAINT analyzis_markers CHECK ( ( size_actual IS NULL ) = ( entry_analyzed IS NULL ) )
 );
 CREATE INDEX IF NOT EXISTS dags_last_updated ON cargo.dags ( entry_last_updated );
@@ -165,7 +166,7 @@ CREATE TABLE IF NOT EXISTS cargo.aggregates (
   aggregate_cid TEXT NOT NULL UNIQUE CONSTRAINT valid_aggregate_cid CHECK ( cargo.valid_cid_v1(aggregate_cid) ),
   piece_cid TEXT UNIQUE NOT NULL,
   sha256hex TEXT NOT NULL,
-  payload_size BIGINT NOT NULL CONSTRAINT valid_payload_size CHECK ( payload_size > 0 ),
+  export_size BIGINT NOT NULL CONSTRAINT valid_export_size CHECK ( export_size > 0 ),
   metadata JSONB,
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
@@ -348,7 +349,9 @@ CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
           ds.entry_created,
           ds.entry_removed,
           ( ds.entry_removed IS NOT NULL ) AS is_tombstone,
-          ( ds.details->'pin_reported_at' IS NULL ) AS cluster_pin_lag,
+          ( ds.details->'pin_reported_at' IS NOT NULL ) AS is_pinned,
+          ( COALESCE( ds.details->>'upload_type', '' ) = 'Remote' ) AS via_psa,
+          CASE WHEN ds.size_claimed = 0 THEN NULL ELSE ds.size_claimed END AS size_claimed,
           ds.details
         FROM cargo.dag_sources ds
         JOIN cargo.dags d USING ( cid_v1 )
@@ -365,31 +368,63 @@ CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
     SELECT
         ml.srcid,
         COUNT(*) AS dags_missing,
-        MIN( ml.entry_created ) AS oldest_missing,
-        MAX( ml.entry_created ) AS newest_missing,
-        COUNT(*) FILTER (WHERE ml.cluster_pin_lag) AS pins_missing
+        COUNT(*) FILTER (WHERE ml.is_pinned) AS dags_missing_pinned,
+        MIN( ml.entry_created )::DATE AS oldest_missing,
+        MAX( ml.entry_created )::DATE AS newest_missing,
+        SUM( ml.size_claimed ) AS size_claimed,
+        ( MIN( ml.entry_created ) FILTER (WHERE ml.is_pinned) )::DATE AS oldest_pinned,
+        SUM( ml.size_claimed ) FILTER (WHERE ml.is_pinned) AS size_claimed_pinned,
+        COUNT(*) FILTER (WHERE NOT ml.is_pinned) AS pins_missing,
+        COUNT(*) FILTER (WHERE ml.via_psa ) AS via_psa
       FROM cargo.dags_missing_list ml
     WHERE
-      NOT ml.is_tombstone
-        AND
-      ml.entry_created < ( NOW() - '30 minutes'::INTERVAL )
+      ( ml.is_pinned OR NOT ml.is_tombstone )
+      --  AND
+      -- ml.entry_created < ( NOW() - '30 minutes'::INTERVAL )
     GROUP BY ml.srcid
   )
-  SELECT
-      s.project,
-      s.srcid,
-      COALESCE( s.details ->> 'nickname', s.details ->> 'github_id', s.source_label ) AS source_nick,
-      s.details ->> 'name' AS source_name,
-      s.details ->> 'email' AS source_email,
-      s.details ->> 'github_id' AS source_ghkey,
-      s.weight,
-      si.dags_missing,
-      si.oldest_missing,
-      si.newest_missing,
-      (100::numeric * si.pins_missing::numeric / si.dags_missing::numeric)::numeric(5,2) AS pct_not_pinned
-    FROM incomplete_sources si
-    JOIN cargo.sources s USING (srcid)
-  ORDER BY s.project, s.weight DESC NULLS FIRST, si.newest_missing DESC, si.srcid
+  (
+    SELECT
+        s.project AS project,
+        NULL AS srcid,
+        'MISSING TOTALS' AS source_email,
+        NULL AS weight,
+        MIN( si.oldest_missing ) AS oldest_missing,
+        MAX( si.newest_missing ) AS newest_missing,
+        SUM( si.dags_missing ) AS cnt,
+        PG_SIZE_PRETTY( SUM( si.size_claimed ) ) AS size_claimed,
+        (100::numeric * SUM( si.pins_missing )::numeric / SUM(si.dags_missing)::numeric)::numeric(7,4) AS pct_not_pinned,
+        (100::numeric * SUM( si.via_psa )::numeric / SUM(si.dags_missing)::numeric)::numeric(7,4) AS pct_via_psa,
+        SUM( si.dags_missing_pinned ) AS cnt_pinned,
+        PG_SIZE_PRETTY( SUM( si.size_claimed_pinned ) ) AS size_pinned,
+        MIN( si.oldest_pinned ) AS oldest_pinned,
+        SUM( si.size_claimed_pinned ) AS bytes_pinned
+      FROM incomplete_sources si
+      JOIN cargo.sources s USING (srcid)
+    GROUP BY s.project
+    ORDER BY s.project
+  )
+    UNION ALL
+  (
+    SELECT
+        s.project AS project,
+        s.srcid,
+        s.details ->> 'email' AS source_email,
+        s.weight,
+        si.oldest_missing,
+        si.newest_missing,
+        si.dags_missing AS cnt,
+        PG_SIZE_PRETTY(si.size_claimed) AS size_claimed,
+        ( 100::numeric * si.pins_missing::numeric / si.dags_missing::numeric )::numeric(7,4) AS pct_not_pinned,
+        ( 100::numeric * si.via_psa::numeric / si.dags_missing::numeric )::numeric(7,4) AS pct_via_psa,
+        si.dags_missing_pinned AS cnt_pinned,
+        PG_SIZE_PRETTY(si.size_claimed_pinned ) AS size_pinned,
+        si.oldest_pinned,
+        si.size_claimed_pinned AS bytes_pinned
+      FROM incomplete_sources si
+      JOIN cargo.sources s USING (srcid)
+    ORDER BY s.weight DESC NULLS FIRST, si.size_claimed_pinned NULLS FIRST, si.dags_missing_pinned, si.srcid
+  )
 );
 
 CREATE OR REPLACE VIEW cargo.source_daily_summary AS (
@@ -444,6 +479,22 @@ CREATE OR REPLACE VIEW cargo.source_daily_ranked_count AS (
 
 CREATE OR REPLACE VIEW cargo.source_all_time_summary AS (
   WITH
+    summary_missing AS (
+      SELECT
+          ds.srcid,
+          COUNT(*) AS dags_missing,
+          MIN( ds.entry_created ) AS oldest_missing,
+          MAX( ds.entry_created ) AS newest_missing
+        FROM cargo.dag_sources ds
+        JOIN cargo.dags d USING ( cid_v1 )
+      WHERE
+        d.size_actual IS NULL
+          AND
+        ds.entry_removed IS NULL
+          AND
+        ds.entry_created < ( NOW() - '30 minutes'::INTERVAL )
+      GROUP BY ds.srcid
+    ),
     summary AS (
       SELECT
         srcid,
@@ -565,6 +616,6 @@ CREATE OR REPLACE VIEW cargo.source_all_time_summary AS (
   FROM summary su
   JOIN cargo.sources s USING ( srcid )
   LEFT JOIN summary_unaggregated unagg USING ( srcid )
-  LEFT JOIN cargo.dags_missing_summary ms USING ( srcid )
+  LEFT JOIN summary_missing ms USING ( srcid )
   ORDER BY (unagg.bytes_total > 0 ), weight DESC NULLS FIRST, unagg.bytes_total DESC NULLS LAST, su.bytes_total DESC NULLS FIRST, s.project, su.srcid
 );

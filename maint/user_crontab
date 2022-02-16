@@ -16,15 +16,13 @@ GOLOG_LOG_FMT=json
 44 * * * *  $HOME/dagcargo/maint/log_and_run.bash cron_aggregate-dags.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron aggregate-dags --skip-pinning --unpin-sources --export-dir ~/CAR_DATA
 * * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_push-metrics.log.ndjson        $HOME/dagcargo/bin/dagcargo_cron push-metrics
 
-
 # helper-sweeps: a set of "only pin, we will do the rest" jobs that help with:
 # - breaking up the outstanding queue and prioritizing it properly
 # - allowing looking back "further in time" to catch stragglers
-* * * * *   SWEEP_TIMEOUT_SEC=180  SWEEP_MOST_AGE="30 minutes"  SWEEP_LEAST_AGE="0 minutes"   SWEEP_CONCURRENCY=128  SWEEP_EXTRA_COND="weight >= 0 AND ( cid_v1 LIKE 'bafk\%' OR project != 2 )"  $HOME/dagcargo/maint/log_and_run.bash pin_sweep_immediate_easy.log  $HOME/dagcargo/maint/pin_sweep.bash
-* * * * *   SWEEP_TIMEOUT_SEC=240  SWEEP_MOST_AGE="30 minutes"  SWEEP_LEAST_AGE="0 minutes"   SWEEP_CONCURRENCY=256  SWEEP_EXTRA_COND="weight >= 0 AND cid_v1 NOT LIKE 'bafk\%' AND project = 2"  $HOME/dagcargo/maint/log_and_run.bash pin_sweep_immediate_rest.log  $HOME/dagcargo/maint/pin_sweep.bash
-* * * * *   SWEEP_TIMEOUT_SEC=1800 SWEEP_MOST_AGE="2 days"      SWEEP_LEAST_AGE="30 minutes"  SWEEP_CONCURRENCY=512  SWEEP_EXTRA_COND="weight >= 0"                                               $HOME/dagcargo/maint/log_and_run.bash pin_sweep_heavy.log           $HOME/dagcargo/maint/pin_sweep.bash
-* * * * *   SWEEP_TIMEOUT_SEC=7200 SWEEP_MOST_AGE="30 days"     SWEEP_LEAST_AGE="2 days"      SWEEP_CONCURRENCY=1024                                                                              $HOME/dagcargo/maint/log_and_run.bash pin_sweep_old.log             $HOME/dagcargo/maint/pin_sweep.bash
-* * * * *   SWEEP_TIMEOUT_SEC=7200 SWEEP_MOST_AGE="90 days"     SWEEP_LEAST_AGE="30 days"     SWEEP_CONCURRENCY=512                                                                               $HOME/dagcargo/maint/log_and_run.bash pin_sweep_ancient.log         $HOME/dagcargo/maint/pin_sweep.bash
+* * * * *   SWEEP_TIMEOUT_SEC=180  SWEEP_MOST_AGE="90 days"  SWEEP_LEAST_AGE="0 minutes"   SWEEP_CONCURRENCY=512  SWEEP_EXTRA_COND="size_claimed < 16*1024*1024 OR cid_v1 LIKE 'bafk\%'"  $HOME/dagcargo/maint/log_and_run.bash pin_sweep_immediate_easy.log  $HOME/dagcargo/maint/pin_sweep.bash
+* * * * *   SWEEP_TIMEOUT_SEC=240  SWEEP_MOST_AGE="90 days"  SWEEP_LEAST_AGE="0 minutes"   SWEEP_CONCURRENCY=256  SWEEP_EXTRA_COND="is_pinned"                                            $HOME/dagcargo/maint/log_and_run.bash pin_sweep_immediate_rest.log  $HOME/dagcargo/maint/pin_sweep.bash
+* * * * *   SWEEP_TIMEOUT_SEC=1800 SWEEP_MOST_AGE="120 days" SWEEP_LEAST_AGE="15 minutes"  SWEEP_CONCURRENCY=128  SWEEP_EXTRA_COND="is_pinned"                                            $HOME/dagcargo/maint/log_and_run.bash pin_sweep_heavy.log           $HOME/dagcargo/maint/pin_sweep.bash
+* * * * *   SWEEP_TIMEOUT_SEC=3600 SWEEP_MOST_AGE="60 days"  SWEEP_LEAST_AGE="1 days"      SWEEP_CONCURRENCY=256                                                                          $HOME/dagcargo/maint/log_and_run.bash pin_sweep_old.log             $HOME/dagcargo/maint/pin_sweep.bash
 
 # deal status overviews
 # https://cargo.web3.storage/status/pending_replication.json
