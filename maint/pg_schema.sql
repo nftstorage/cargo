@@ -18,41 +18,6 @@ END;
 $$;
 
 CREATE OR REPLACE
-  FUNCTION cargo.update_parent_dag_timestamp() RETURNS TRIGGER
-    LANGUAGE plpgsql
-AS $$
-BEGIN
-  -- RAISE WARNING '%OLD:% %NEW:% %', E'\n', OLD, E'\n', NEW, E'\n';
-  UPDATE cargo.dags SET entry_last_updated = NOW() WHERE cargo.dags.cid_v1 IN ( NEW.cid_v1, OLD.cid_v1 );
-  RETURN NULL;
-END;
-$$;
-
-CREATE OR REPLACE
-  FUNCTION cargo.update_aggregate_dags_timestamps() RETURNS TRIGGER
-    LANGUAGE plpgsql
-AS $$
-BEGIN
-  UPDATE cargo.dags SET entry_last_updated = NOW() WHERE cargo.dags.cid_v1 IN (
-    SELECT ae.cid_v1 FROM cargo.aggregate_entries ae WHERE ae.aggregate_cid IN ( NEW.aggregate_cid, OLD.aggregate_cid )
-  );
-  RETURN NULL;
-END;
-$$;
-
-CREATE OR REPLACE
-  FUNCTION cargo.update_source_dags_timestamps() RETURNS TRIGGER
-    LANGUAGE plpgsql
-AS $$
-BEGIN
-  UPDATE cargo.dags SET entry_last_updated = NOW() WHERE cargo.dags.cid_v1 IN (
-    SELECT cid_v1 FROM cargo.dag_sources WHERE srcid IN ( NEW.srcid, OLD.srcid )
-  );
-  RETURN NULL;
-END;
-$$;
-
-CREATE OR REPLACE
   FUNCTION cargo.record_deal_event() RETURNS TRIGGER
     LANGUAGE plpgsql
 AS $$
@@ -107,17 +72,6 @@ CREATE TABLE IF NOT EXISTS cargo.sources (
 );
 CREATE INDEX IF NOT EXISTS sources_weight ON cargo.sources ( weight );
 CREATE INDEX IF NOT EXISTS sources_source_label ON cargo.sources ( source_label );
-CREATE TRIGGER trigger_dag_update_on_related_source_insert_delete
-  AFTER INSERT OR DELETE ON cargo.sources
-  FOR EACH ROW
-  EXECUTE PROCEDURE cargo.update_source_dags_timestamps()
-;
-CREATE TRIGGER trigger_dag_update_on_related_source_change
-  AFTER UPDATE OF weight ON cargo.sources
-  FOR EACH ROW
-  WHEN ( OLD.weight IS DISTINCT FROM NEW.weight )
-  EXECUTE PROCEDURE cargo.update_source_dags_timestamps()
-;
 
 
 CREATE TABLE IF NOT EXISTS cargo.dag_sources (
@@ -129,7 +83,6 @@ CREATE TABLE IF NOT EXISTS cargo.dag_sources (
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
   entry_last_updated TIMESTAMP WITH TIME ZONE NOT NULL,
   entry_removed TIMESTAMP WITH TIME ZONE,
-  entry_last_exported TIMESTAMP WITH TIME ZONE,
   CONSTRAINT singleton_dag_source_record UNIQUE ( srcid, source_key )
 );
 CREATE INDEX IF NOT EXISTS dag_sources_cidv1 ON cargo.dag_sources ( cid_v1 ) INCLUDE ( entry_removed );
@@ -142,23 +95,12 @@ CREATE TRIGGER trigger_dag_source_insert
   FOR EACH ROW
   EXECUTE PROCEDURE cargo.update_entry_timestamp()
 ;
-CREATE TRIGGER trigger_dag_update_on_new_sources
-  AFTER INSERT OR DELETE ON cargo.dag_sources
-  FOR EACH ROW
-  EXECUTE PROCEDURE cargo.update_parent_dag_timestamp()
-;
 CREATE TRIGGER trigger_dag_source_updated
   BEFORE UPDATE ON cargo.dag_sources
   FOR EACH ROW
   -- *always* trigger the update tstamp bump so thath w "front-run" the remote source timestamp
   -- WHEN (OLD IS DISTINCT FROM NEW)
   EXECUTE PROCEDURE cargo.update_entry_timestamp()
-;
-CREATE TRIGGER trigger_dag_update_on_related_sources
-  AFTER UPDATE OF entry_removed ON cargo.dag_sources
-  FOR EACH ROW
-  WHEN ( OLD.entry_removed IS DISTINCT FROM NEW.entry_removed )
-  EXECUTE PROCEDURE cargo.update_parent_dag_timestamp()
 ;
 
 
@@ -219,11 +161,6 @@ CREATE TRIGGER trigger_deal_insert
   FOR EACH ROW
   EXECUTE PROCEDURE cargo.update_entry_timestamp()
 ;
-CREATE TRIGGER trigger_dag_update_on_related_deal_insert_delete
-  AFTER INSERT OR DELETE ON cargo.deals
-  FOR EACH ROW
-  EXECUTE PROCEDURE cargo.update_aggregate_dags_timestamps()
-;
 CREATE TRIGGER trigger_deal_updated
   BEFORE UPDATE ON cargo.deals
   FOR EACH ROW
@@ -235,12 +172,6 @@ CREATE TRIGGER trigger_deal_updated
     OLD.sector_start_epoch IS DISTINCT FROM NEW.sector_start_epoch
   )
   EXECUTE PROCEDURE cargo.update_entry_timestamp()
-;
-CREATE TRIGGER trigger_dag_update_on_related_deal_change
-  AFTER UPDATE ON cargo.deals
-  FOR EACH ROW
-  WHEN (OLD.entry_last_updated != NEW.entry_last_updated)
-  EXECUTE PROCEDURE cargo.update_aggregate_dags_timestamps()
 ;
 CREATE TRIGGER trigger_basic_deal_history_on_insert
   AFTER INSERT ON cargo.deals
