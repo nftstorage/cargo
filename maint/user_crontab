@@ -9,18 +9,13 @@
 GOLOG_LOG_FMT=json
 
 # Everything fires every 5 mins: if another process is running, the lock is silently observed without logging anything
-*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_get-new-dags-w3s.log.ndjson  $HOME/dagcargo/bin/dagcargo_cron get-new-dags --project 0 --project 1
-*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_get-new-dags-nfts.log.ndjson $HOME/dagcargo/bin/dagcargo_cron get-new-dags --project 2
-*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_track-deals.log.ndjson       $HOME/dagcargo/bin/dagcargo_cron track-deals
-* * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_analyze-dags.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron analyze-dags --prepinned-only
-44 * * * *  $HOME/dagcargo/maint/log_and_run.bash cron_aggregate-dags.log.ndjson    $HOME/dagcargo/bin/dagcargo_cron aggregate-dags --skip-pinning --unpin-sources --export-dir ~/CAR_DATA
-* * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_push-metrics.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron push-metrics
+*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_get-new-dags-w3s.log.ndjson    $HOME/dagcargo/bin/dagcargo_cron get-new-dags --project 0 --project 1
+*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_get-new-dags-nfts.log.ndjson   $HOME/dagcargo/bin/dagcargo_cron get-new-dags --project 2
+*/5 * * * * $HOME/dagcargo/maint/log_and_run.bash cron_track-deals.log.ndjson         $HOME/dagcargo/bin/dagcargo_cron track-deals
+* * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_analyze-dags.log.ndjson        $HOME/dagcargo/bin/dagcargo_cron analyze-dags --prepinned-only
+44 * * * *  $HOME/dagcargo/maint/log_and_run.bash cron_aggregate-dags.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron aggregate-dags --skip-pinning --unpin-sources --export-dir ~/CAR_DATA
+* * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_push-metrics.log.ndjson        $HOME/dagcargo/bin/dagcargo_cron push-metrics
 
-### FIXME!!!!
-# Sadly things need a bounce once in a while, at least for now
-# Adding this as a workaround to get things unblocked super-short-term
-# ( the daemon is launched such that it autorestarts )
-23 */2 * * *  IPFSAPI="${IPFSAPI:-$( grep "ipfs-api" "$HOME/dagcargo.toml" | cut -d '=' -f2- | sed 's/[ "]*//g' )}"; IPFSAPI="${IPFSAPI:-http://localhost:5001}"; curl -sXPOST "$IPFSAPI/api/v0/shutdown"
 
 # helper-sweeps: a set of "only pin, we will do the rest" jobs that help with:
 # - breaking up the outstanding queue and prioritizing it properly

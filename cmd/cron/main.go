@@ -26,10 +26,10 @@ var currentCmdLock io.Closer
 const filDefaultLookback = 10
 
 var globalFlags = []cli.Flag{
-	&cli.StringFlag{
+	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:  "ipfs-api",
 		Value: "http://localhost:5001",
-	},
+	}),
 	&cli.UintFlag{
 		Name:  "ipfs-api-timeout",
 		Usage: "HTTP API timeout in seconds",
