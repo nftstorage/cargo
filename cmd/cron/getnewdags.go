@@ -47,7 +47,7 @@ var getNewDags = &cli.Command{
 		&cli.UintFlag{
 			Name:  "skip-entries-aged",
 			Usage: "Query the states of uploads and users last changed within that many days",
-			Value: 5,
+			Value: 1,
 		},
 	},
 	Action: func(cctx *cli.Context) error {

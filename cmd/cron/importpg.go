@@ -178,18 +178,17 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 				LEFT JOIN auth_key k ON ds.%s = k.id
 			WHERE
 				ds.updated_at > $1
-				-- FIXME: commented out until we figure out wy w3s db is so large...
-				--		OR
-				--	EXISTS (
-				--		SELECT 42
-				--			FROM pin
-				--		WHERE
-				--			pin.content_cid = d.cid
-				--				AND
-				--			pin.status = 'Pinned'
-				--				AND
-				--			pin.updated_at > $1
-				--	)
+					OR
+				EXISTS (
+					SELECT 42
+						FROM pin
+					WHERE
+						pin.content_cid = d.cid
+							AND
+						pin.status = 'Pinned'
+							AND
+						pin.updated_at > $1
+				)
 			`,
 			p.templatedSQLDetailsUpload,
 			p.templatedSQLUploadAuthkeyFkColumn,
