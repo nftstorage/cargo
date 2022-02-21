@@ -331,7 +331,8 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 			SELECT
 					s.id::TEXT AS source_label,
 					s.inserted_at AS entry_created,
-					%s AS details
+					%s AS details,
+					( s.email LIKE 'niftysave%%@nft.storage' ) AS is_niftysave
 				FROM public.user s
 			WHERE
 				s.updated_at > $1
@@ -350,10 +351,15 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 
 	srcMap := make(map[string]*int64)
 	for srcRows.Next() {
-		var isNewSource bool
+		var isNewSource, isNifty bool
 		var s dagSource
-		if err = srcRows.Scan(&s.SourceLabel, &s.CreatedAt, &s.Details); err != nil {
+		if err = srcRows.Scan(&s.SourceLabel, &s.CreatedAt, &s.Details, &isNifty); err != nil {
 			return err
+		}
+
+		if isNifty {
+			log.Infof("Skipping niftysave source %s", s.SourceLabel)
+			continue
 		}
 
 		err = cargoDb.QueryRow(
@@ -390,6 +396,7 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 	for _, d := range remoteDags {
 
 		d.SourceID = srcMap[d.sourceLabel]
+
 		if _, known := knownDags[d.cidV1]; !known {
 			_, err = cargoDb.Exec(
 				ctx,
@@ -403,6 +410,11 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 			if err != nil {
 				return err
 			}
+		}
+
+		if d.SourceID == nil {
+			log.Infof("skipping sourceless entry %s from skipped %s", d.SourceKey, d.sourceLabel)
+			continue
 		}
 
 		var isNew, wasAlreadyRemoved bool
