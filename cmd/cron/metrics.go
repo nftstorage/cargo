@@ -28,7 +28,7 @@ type cargoMetric struct {
 
 var workerCount = 24
 var onlyHeavy bool
-var heavyMetricDbTimeoutHours = 2
+var heavyMetricDbTimeout = 90 * time.Minute
 
 var pushMetrics = &cli.Command{
 	Usage:  "Push service metrics to external collectors",
@@ -1143,7 +1143,7 @@ func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, e
 	defer tx.Rollback(context.Background()) //nolint:errcheck
 
 	if onlyHeavy {
-		if _, err = tx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (time.Duration(heavyMetricDbTimeoutHours)*time.Hour).Milliseconds())); err != nil {
+		if _, err = tx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, heavyMetricDbTimeout.Milliseconds())); err != nil {
 			return nil, err
 		}
 	}

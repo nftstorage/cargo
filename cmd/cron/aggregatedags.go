@@ -1050,6 +1050,11 @@ watchdog:
 		}
 	}()
 
+	_, err = tx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (2*time.Hour).Milliseconds()))
+	if err != nil {
+		return nil, err
+	}
+
 	if _, err = tx.Exec(
 		ctx,
 		`

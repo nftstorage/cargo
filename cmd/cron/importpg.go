@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ipfs/go-cid"
+	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/urfave/cli/v2"
 )
@@ -203,9 +204,19 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 		return err
 	}
 	defer srcDb.Close()
+	srcTx, err := srcDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return err
+	}
+	defer srcTx.Rollback(context.Background()) //nolint:errcheck
+
+	_, err = srcTx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (2*time.Hour).Milliseconds()))
+	if err != nil {
+		return err
+	}
 
 	// first pull all dag rows, store in ram, users come second
-	dagRows, err := srcDb.Query(
+	dagRows, err := srcTx.Query(
 		ctx,
 		fmt.Sprintf(
 			`
@@ -324,7 +335,7 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 			toGetSrcLabels = append(toGetSrcLabels, d.sourceLabel)
 		}
 	}
-	srcRows, err := srcDb.Query(
+	srcRows, err := srcTx.Query(
 		ctx,
 		fmt.Sprintf(
 			`

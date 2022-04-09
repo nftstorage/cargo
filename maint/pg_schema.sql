@@ -37,7 +37,6 @@ CREATE TABLE IF NOT EXISTS cargo.dags (
   meta JSONB,
   CONSTRAINT analyzis_markers CHECK ( ( size_actual IS NULL ) = ( entry_analyzed IS NULL ) )
 );
-CREATE INDEX IF NOT EXISTS dags_last_updated ON cargo.dags ( entry_last_updated );
 CREATE INDEX IF NOT EXISTS dags_entry_analyzed ON cargo.dags ( entry_analyzed );
 CREATE INDEX IF NOT EXISTS dags_size_actual ON cargo.dags ( size_actual );
 CREATE TRIGGER trigger_dag_insert
@@ -55,10 +54,13 @@ CREATE TRIGGER trigger_dag_updated
 
 CREATE TABLE IF NOT EXISTS cargo.refs (
   cid_v1 TEXT NOT NULL REFERENCES cargo.dags ( cid_v1 ),
-  ref_cid TEXT NOT NULL CONSTRAINT valid_ref_cid CHECK ( cargo.valid_cid_v1(ref_cid) OR SUBSTRING( ref_cid FROM 1 FOR 2 ) = 'Qm' ),
-  CONSTRAINT singleton_by_ref UNIQUE ( ref_cid, cid_v1 )
+  ref_cid TEXT NOT NULL CONSTRAINT valid_ref_cid CHECK ( cargo.valid_cid_v1(ref_cid) OR SUBSTRING( ref_cid FROM 1 FOR 2 ) = 'Qm' )
 );
-CREATE INDEX IF NOT EXISTS refs_cid ON cargo.refs ( cid_v1 ) INCLUDE ( ref_cid );
+ALTER TABLE cargo.refs ALTER COLUMN cid_v1 SET STORAGE MAIN;
+ALTER TABLE cargo.refs ALTER COLUMN ref_cid SET STORAGE MAIN;
+CREATE UNIQUE INDEX IF NOT EXISTS refs_by_ref ON cargo.refs ( ref_cid, cid_v1 ) WITH ( FILLFACTOR = 65 );
+CREATE UNIQUE INDEX IF NOT EXISTS refs_by_cid ON cargo.refs ( cid_v1, ref_cid ) WITH ( FILLFACTOR = 80 );
+
 
 
 CREATE TABLE IF NOT EXISTS cargo.sources (
@@ -89,7 +91,6 @@ CREATE INDEX IF NOT EXISTS dag_sources_cidv1 ON cargo.dag_sources ( cid_v1 ) INC
 CREATE INDEX IF NOT EXISTS dag_sources_entry_removed ON cargo.dag_sources ( entry_removed );
 CREATE INDEX IF NOT EXISTS dag_sources_entry_not_removed ON cargo.dag_sources ( cid_v1 ) WHERE ( entry_removed IS NULL );
 CREATE INDEX IF NOT EXISTS dag_sources_entry_created ON cargo.dag_sources ( entry_created );
-CREATE INDEX IF NOT EXISTS dag_sources_pintime ON cargo.dag_sources ( (details ->> 'pin_reported_at') );
 CREATE TRIGGER trigger_dag_source_insert
   BEFORE INSERT ON cargo.dag_sources
   FOR EACH ROW
@@ -310,8 +311,6 @@ CREATE OR REPLACE VIEW cargo.dags_missing_summary AS (
       FROM cargo.dags_missing_list ml
     WHERE
       ( ml.is_pinned OR NOT ml.is_tombstone )
-      --  AND
-      -- ml.entry_created < ( NOW() - '30 minutes'::INTERVAL )
     GROUP BY ml.srcid
   )
   (
