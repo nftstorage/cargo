@@ -424,7 +424,7 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 		}
 
 		if d.SourceID == nil {
-			log.Infof("skipping sourceless entry %s from skipped %s", d.SourceKey, d.sourceLabel)
+			// log.Infof("skipping sourceless entry %s from skipped %s", d.SourceKey, d.sourceLabel)
 			continue
 		}
 
@@ -432,13 +432,14 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 		err = cargoDb.QueryRow(
 			ctx,
 			`
-			INSERT INTO cargo.dag_sources ( cid_v1, source_key, srcid, size_claimed, entry_created, entry_removed, details )
-				VALUES ( $1, $2, $3, $4, $5, $6, $7 )
+			INSERT INTO cargo.dag_sources ( cid_v1, source_key, srcid, size_claimed, entry_created, entry_removed, entry_last_updated, details )
+				VALUES ( $1, $2, $3, $4, $5, $6, $7, $8 )
 				ON CONFLICT ( srcid, source_key ) DO UPDATE SET
 					size_claimed = EXCLUDED.size_claimed,
 					details = EXCLUDED.details,
 					entry_created = LEAST( cargo.dag_sources.entry_created, EXCLUDED.entry_created ),
-					entry_removed = EXCLUDED.entry_removed
+					entry_removed = EXCLUDED.entry_removed,
+					entry_last_updated = EXCLUDED.entry_last_updated
 			RETURNING
 				(xmax = 0),
 				-- this select sees the table as it was before the upsert
@@ -461,6 +462,7 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 			d.SizeClaimed,
 			d.CreatedAt,
 			d.RemovedAt,
+			d.UpdatedAt,
 			d.Details,
 		).Scan(&isNew, &wasAlreadyRemoved)
 		if err != nil {

@@ -91,18 +91,6 @@ CREATE INDEX IF NOT EXISTS dag_sources_cidv1 ON cargo.dag_sources ( cid_v1 ) INC
 CREATE INDEX IF NOT EXISTS dag_sources_entry_removed ON cargo.dag_sources ( entry_removed );
 CREATE INDEX IF NOT EXISTS dag_sources_entry_not_removed ON cargo.dag_sources ( cid_v1 ) WHERE ( entry_removed IS NULL );
 CREATE INDEX IF NOT EXISTS dag_sources_entry_created ON cargo.dag_sources ( entry_created );
-CREATE TRIGGER trigger_dag_source_insert
-  BEFORE INSERT ON cargo.dag_sources
-  FOR EACH ROW
-  EXECUTE PROCEDURE cargo.update_entry_timestamp()
-;
-CREATE TRIGGER trigger_dag_source_updated
-  BEFORE UPDATE ON cargo.dag_sources
-  FOR EACH ROW
-  -- *always* trigger the update tstamp bump so thath w "front-run" the remote source timestamp
-  -- WHEN (OLD IS DISTINCT FROM NEW)
-  EXECUTE PROCEDURE cargo.update_entry_timestamp()
-;
 
 
 CREATE TABLE IF NOT EXISTS cargo.aggregates (
