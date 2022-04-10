@@ -16,13 +16,20 @@ SWEEP_IPFSAPI="${SWEEP_IPFSAPI:-http://localhost:5001}"
 
 say() { echo -e "\n$(date -u): $@"; }
 
-if [[ ! -t 0 ]] && current_requested=$( cat | sort -u ) && [[ -n "$current_requested" ]]; then
+if [[ ! -t 0 ]] && current_requested="$( cat | perl -p -e 's/\s+/\n/g' | sort -u )" && [[ -n "$current_requested" ]]; then
 
   SWEEP_MOST_AGE="N/A"
   SWEEP_LEAST_AGE="N/A"
   SWEEP_EXTRA_COND="N/A"
 
   say "Got $( wc -w <<<"$current_requested" ) items on STDIN"
+
+  if [[ -z "${SWEEP_ANY:-}" ]]; then
+    current_requested="$( comm -12 \
+      <( echo "$current_requested" ) \
+      <( psql -AtF, service=cargo <<<"SELECT DISTINCT( cid_v1 ) FROM cargo.dags_missing_list ORDER BY cid_v1" ) \
+    )"
+  fi
 
 else
 
@@ -53,9 +60,8 @@ else
 
 fi
 
-
+rundesc="[[ SWEEP_TIMEOUT_SEC:'$SWEEP_TIMEOUT_SEC' SWEEP_CONCURRENCY:'$SWEEP_CONCURRENCY' SWEEP_MOST_AGE:'$SWEEP_MOST_AGE' SWEEP_LEAST_AGE:'$SWEEP_LEAST_AGE' SWEEP_EXTRA_COND:\"$SWEEP_EXTRA_COND\" ]]"
 [[ "$( wc -w <<<"$current_requested" )" == 0 ]] && say "Nothing to do $rundesc" && exit 0
-
 
 current_pins="$( curl -sXPOST "$SWEEP_IPFSAPI/api/v0/pin/ls?type=recursive" | jq -r '.Keys | to_entries | .[] | .key' | sort -u )"
 [[ -z "$current_pins" ]] && say "IPFS pin ls returned an empty set" && exit 0
@@ -68,8 +74,6 @@ cids_pending="$(
   | sort -R
 )"
 
-rundesc="[[ SWEEP_TIMEOUT_SEC:'$SWEEP_TIMEOUT_SEC' SWEEP_CONCURRENCY:'$SWEEP_CONCURRENCY' SWEEP_MOST_AGE:'$SWEEP_MOST_AGE' SWEEP_LEAST_AGE:'$SWEEP_LEAST_AGE' SWEEP_EXTRA_COND:\"$SWEEP_EXTRA_COND\" ]]"
-
 pending_count="$( wc -w <<<"$cids_pending" )"
 [[ "$pending_count" == 0 ]] && say "Nothing to do $rundesc" && exit 0
 
@@ -79,7 +83,7 @@ trap 'dunnn' EXIT
 say "Attempting sweep of $pending_count DAGs $rundesc"
 
 [[ -t 1 ]] && show_progress="true" || show_progress="false"
-<<<"$cids_pending" perl -p -e 's/\s+/\n/g' | xargs -P $SWEEP_CONCURRENCY -n1 -I{} bash -c "curl -m$(( $SWEEP_TIMEOUT_SEC + 5 )) -sNXPOST '$SWEEP_IPFSAPI/api/v0/pin/add?progress=${show_progress}&timeout=${SWEEP_TIMEOUT_SEC}s&arg={}' | perl -pe '$|++; s/\$/ \$\$/'" \
+<<<"$cids_pending" xargs -P $SWEEP_CONCURRENCY -n1 -I{} bash -c "curl -m$(( $SWEEP_TIMEOUT_SEC + 5 )) -sNXPOST '$SWEEP_IPFSAPI/api/v0/pin/add?progress=${show_progress}&timeout=${SWEEP_TIMEOUT_SEC}s&arg={}' | perl -pe '$|++; s/\$/ \$\$/'" \
  | perl -pe '
    BEGIN { ($|,@anim)=(1,qw(- \ | /)) }
    s/^\{\}.*//s
