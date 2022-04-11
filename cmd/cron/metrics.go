@@ -28,6 +28,7 @@ type cargoMetric struct {
 
 var workerCount = 24
 var onlyHeavy bool
+var metricDbTimeout = 30 * time.Minute
 var heavyMetricDbTimeout = 90 * time.Minute
 
 var pushMetrics = &cli.Command{
@@ -106,7 +107,7 @@ var metricsList = []cargoMetric{
 	{
 		kind: cargoMetricCounter,
 		name: "dagcargo_sources_total_with_uploads",
-		help: "Count of sources/users that have used the service to store data",
+		help: "Count of sources/users that have used the service to store some data",
 		query: `
 			WITH
 				active_sources AS (
@@ -181,7 +182,7 @@ var metricsList = []cargoMetric{
 	{
 		kind: cargoMetricGauge,
 		name: "dagcargo_project_stored_items_pending",
-		help: "Count of items pending retrieval from IPFS per project",
+		help: "Count of reported-pinned items pending retrieval from IPFS per project",
 		query: `
 			WITH
 				active_sources AS (
@@ -204,10 +205,9 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		heavy: true, // not really heavy but should accompany other metrics that *are*
-		kind:  cargoMetricGauge,
-		name:  "dagcargo_project_stored_items_oversized",
-		help:  "Count of items larger than a 32GiB sector",
+		kind: cargoMetricGauge,
+		name: "dagcargo_project_stored_items_oversized",
+		help: "Count of items larger than a 32GiB sector not marked for deletion",
 		query: fmt.Sprintf(
 			`
 			WITH
@@ -233,10 +233,9 @@ var metricsList = []cargoMetric{
 		),
 	},
 	{
-		heavy: true, // not really heavy but should accompany other metrics that *are*
-		kind:  cargoMetricGauge,
-		name:  "dagcargo_project_stored_items_inactive",
-		help:  "Count of items exclusively from inactive sources",
+		kind: cargoMetricGauge,
+		name: "dagcargo_project_stored_items_inactive",
+		help: "Count of items exclusively from inactive sources",
 		query: `
 			WITH
 				inactive_sources AS (
@@ -370,7 +369,7 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		heavy: true, // not really heavy but should accompany other metrics that *are*
+		heavy: true,
 		kind:  cargoMetricGauge,
 		name:  "dagcargo_project_stored_bytes_deleted_deduplicated",
 		help:  "Amount of known best-effort-deduplicated bytes retrieved and then marked deleted per project",
@@ -439,7 +438,7 @@ var metricsList = []cargoMetric{
 		heavy: true, // not really heavy but should accompany other metrics that *are*
 		kind:  cargoMetricGauge,
 		name:  "dagcargo_project_stored_bytes_oversized_deduplicated",
-		help:  "Amount of bytes in dags larger than a 32GiB sector",
+		help:  "Amount of bytes in dags larger than a 32GiB sector not marked for deletion",
 		query: fmt.Sprintf(
 			`
 			WITH
@@ -553,7 +552,7 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		heavy: true,
+		heavy: true, // FIXME - use some sort of rollup... too heavy even for heavy
 		kind:  cargoMetricCounter,
 		name:  "dagcargo_handled_total_blocks",
 		help:  "How many unique-by-cid blocks did the service handle since inception",
@@ -681,9 +680,10 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_items_undealt_aggregates",
-		help: "Count of aggregated items awaiting their first active deal per project",
+		heavy: true, // FIXME - rewire to per-aggregate meta, switch to lite metrics
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_items_undealt_aggregates",
+		help:  "Count of aggregated items awaiting their first active deal per project",
 		query: `
 			WITH
 				q AS (
@@ -718,9 +718,10 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_bytes_undealt_aggregates",
-		help: "Amount of per-DAG-deduplicated bytes awaiting their first active deal per project",
+		heavy: true, // FIXME - rewire to per-aggregate meta, switch to lite metrics
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_bytes_undealt_aggregates",
+		help:  "Amount of per-DAG-deduplicated bytes awaiting their first active deal per project",
 		query: `
 			WITH
 				q AS (
@@ -755,9 +756,10 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_bytes_undealt_aggregates_deduplicated",
-		help: "Best-effort-deduplicated bytes awaiting their first active deal per project",
+		heavy: true, // FIXME - rewire to per-aggregate meta, switch to lite metrics
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_bytes_undealt_aggregates_deduplicated",
+		help:  "Best-effort-deduplicated bytes awaiting their first active deal per project",
 		query: `
 			WITH
 				q AS (
@@ -802,9 +804,10 @@ var metricsList = []cargoMetric{
 			`,
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_items_unaggregated",
-		help: "Count of items pending initial aggregate inclusion per project",
+		heavy: true, // FIXME - not heavy, has to go with undealt_aggregates above
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_items_unaggregated",
+		help:  "Count of items pending initial aggregate inclusion per project",
 		query: fmt.Sprintf(
 			`
 			WITH
@@ -833,9 +836,10 @@ var metricsList = []cargoMetric{
 		),
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_bytes_unaggregated",
-		help: "Amount of per-DAG-deduplicated bytes pending initial aggregate inclusion per project",
+		heavy: true, // FIXME - not heavy, has to go with undealt_aggregates above
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_bytes_unaggregated",
+		help:  "Amount of per-DAG-deduplicated bytes pending initial aggregate inclusion per project",
 		query: fmt.Sprintf(
 			`
 			WITH
@@ -1095,7 +1099,7 @@ func pushPrometheusMetrics(cctx *cli.Context) error {
 					return
 				}
 
-				cols, err := gatherMetric(cctx.Context, m)
+				cols, err := gatherMetric(cctx, m)
 
 				mu.Lock()
 
@@ -1133,22 +1137,44 @@ func pushPrometheusMetrics(cctx *cli.Context) error {
 	return firstErrorSeen
 }
 
-func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, error) {
+func gatherMetric(cctx *cli.Context, m cargoMetric) ([]prometheus.Collector, error) {
 
+	ctx := cctx.Context
 	t0 := time.Now()
-	tx, err := cargoDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+
+	var err error
+	var statTx pgx.Tx
+	defer func() {
+		if statTx != nil {
+			statTx.Rollback(context.Background()) //nolint:errcheck
+		}
+	}()
+
+	if statConnStr := cctx.String("cargo-pg-stats-connstring"); statConnStr != "" {
+		statDb, connErr := pgx.Connect(ctx, statConnStr)
+		if connErr != nil {
+			return nil, connErr
+		}
+		defer statDb.Close(context.Background()) //nolint:errcheck
+		statTx, err = statDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	} else {
+		statTx, err = cargoDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(context.Background()) //nolint:errcheck
 
+	var msecTOut int64
 	if onlyHeavy {
-		if _, err = tx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, heavyMetricDbTimeout.Milliseconds())); err != nil {
-			return nil, err
-		}
+		msecTOut = heavyMetricDbTimeout.Milliseconds()
+	} else {
+		msecTOut = metricDbTimeout.Milliseconds()
+	}
+	if _, err = statTx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, msecTOut)); err != nil {
+		return nil, err
 	}
 
-	rows, err := tx.Query(ctx, m.query)
+	rows, err := statTx.Query(ctx, m.query)
 	if err != nil {
 		return nil, err
 	}
@@ -1159,7 +1185,7 @@ func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, e
 		return nil, xerrors.Errorf("unexpected %d columns in resultset", len(fd))
 	}
 
-	res := make(map[string]*float64)
+	res := make(map[string]*int64)
 
 	if len(fd) == 1 {
 
@@ -1175,42 +1201,32 @@ func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, e
 		if rows.Next() {
 			return nil, xerrors.New("unexpectedly received more than one result")
 		}
-
-		var fval *float64
-		if val != nil {
-			fv := float64(*val)
-			fval = &fv
-		}
-
-		res[""] = fval
+		res[""] = val
 
 	} else {
 
-		var group string
-		var val *int64
 		for rows.Next() {
-
+			var group string
+			var val *int64
 			if err := rows.Scan(&group, &val); err != nil {
 				return nil, err
 			}
-
-			var fval *float64
-			if val != nil {
-				fv := float64(*val)
-				fval = &fv
-			}
-
-			res[group] = fval
+			res[group] = val
 		}
 	}
-
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	took := time.Since(t0).Truncate(time.Millisecond).Seconds()
 
+	statTx.Rollback(context.Background()) //nolint:errcheck
+	statTx = nil
+
 	cl := make([]prometheus.Collector, 0)
 	for g, v := range res {
+
+		dims := make([][2]string, 0)
 		var label prometheus.Labels
 		if g != "" {
 			gType := string(fd[0].Name)
@@ -1218,24 +1234,48 @@ func gatherMetric(ctx context.Context, m cargoMetric) ([]prometheus.Collector, e
 				g = projects[g]
 			}
 			label = prometheus.Labels{gType: g}
+			dims = append(dims, [2]string{gType, g})
 		}
 
 		if m.kind == cargoMetricCounter {
 			log.Infow("evaluatedCounter", "name", m.name, "label", label, "value", v, "tookSeconds", took)
 			if v != nil {
 				c := prometheus.NewCounter(prometheus.CounterOpts{Name: m.name, Help: m.help, ConstLabels: label})
-				c.Add(*v)
+				c.Add(float64(*v))
 				cl = append(cl, c)
 			}
 		} else if m.kind == cargoMetricGauge {
 			log.Infow("evaluatedGauge", "name", m.name, "label", label, "value", v, "tookSeconds", took)
 			if v != nil {
 				c := prometheus.NewGauge(prometheus.GaugeOpts{Name: m.name, Help: m.help, ConstLabels: label})
-				c.Set(*v)
+				c.Set(float64(*v))
 				cl = append(cl, c)
 			}
 		} else {
 			return nil, xerrors.Errorf("unknown metric kind '%s'", m.kind)
+		}
+
+		_, err = cargoDb.Exec(
+			ctx,
+			`
+			INSERT INTO metrics
+					( name, dimensions, description, value, collection_took_seconds )
+				VALUES
+					( $1, $2, $3, $4, $5 )
+				ON CONFLICT ( name, dimensions ) DO UPDATE SET
+					description = EXCLUDED.description,
+					value = EXCLUDED.value,
+					collection_took_seconds = EXCLUDED.collection_took_seconds,
+					collected_at = CLOCK_TIMESTAMP()
+			`,
+			m.name,
+			dims,
+			m.help,
+			v,
+			took,
+		)
+		if err != nil {
+			return nil, err
 		}
 	}
 

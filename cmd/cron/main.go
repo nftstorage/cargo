@@ -57,6 +57,10 @@ var globalFlags = []cli.Flag{
 		Value: "postgres:///postgres?user=cargo&password=&host=/var/run/postgresql",
 	}),
 	altsrc.NewStringFlag(&cli.StringFlag{
+		Name:        "cargo-pg-stats-connstring",
+		DefaultText: "defaults to cargo-pg-connstring",
+	}),
+	altsrc.NewStringFlag(&cli.StringFlag{
 		Name:        "aggregate-location-template",
 		DefaultText: "  {{ private, read from config file }}  ",
 		Hidden:      true,

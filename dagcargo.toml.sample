@@ -1,4 +1,5 @@
 cargo-pg-connstring = "postgres:///postgres?user=cargo&password=&host=/var/run/postgresql"
+cargo-pg-stats-connstring = ""
 
 lotus-api = "http://localhost:1234"
 

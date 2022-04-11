@@ -27,6 +27,16 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE
+  FUNCTION cargo.record_metric_change() RETURNS TRIGGER
+    LANGUAGE plpgsql
+AS $$
+BEGIN
+  INSERT INTO cargo.metrics_log ( name, dimensions, value, collected_at ) VALUES ( NEW.name, NEW.dimensions, NEW.value, NEW.collected_at );
+  RETURN NULL;
+END;
+$$;
+
 
 CREATE TABLE IF NOT EXISTS cargo.dags (
   cid_v1 TEXT NOT NULL UNIQUE CONSTRAINT valid_cidv1 CHECK ( cargo.valid_cid_v1(cid_v1) ),
@@ -182,6 +192,29 @@ CREATE TABLE IF NOT EXISTS cargo.deal_events (
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS deal_events_deal_id ON cargo.deal_events ( deal_id );
+
+
+CREATE TABLE IF NOT EXISTS cargo.metrics (
+  name TEXT NOT NULL,
+  dimensions TEXT[][] NOT NULL,
+  description TEXT NOT NULL,
+  value BIGINT,
+  collected_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CLOCK_TIMESTAMP(),
+  collection_took_seconds NUMERIC NOT NULL,
+  CONSTRAINT metric UNIQUE ( name, dimensions )
+);
+CREATE TRIGGER trigger_store_metric_history
+  AFTER INSERT OR UPDATE ON cargo.metrics
+  FOR EACH ROW
+  EXECUTE PROCEDURE cargo.record_metric_change()
+;
+
+CREATE TABLE IF NOT EXISTS cargo.metrics_log (
+  name TEXT NOT NULL,
+  dimensions TEXT[][] NOT NULL,
+  value BIGINT,
+  collected_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
 
 
 CREATE OR REPLACE VIEW cargo.aggregate_summary AS (
