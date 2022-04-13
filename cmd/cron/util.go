@@ -24,6 +24,8 @@ import (
 )
 
 var (
+	promInstance = "daghaus_cargo"
+
 	projects = map[string]string{
 		"0": "staging.web3.storage",
 		"1": "web3.storage",
