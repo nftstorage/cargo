@@ -25,8 +25,8 @@ GOLOG_LOG_FMT=json
 * * * * *   SWEEP_TIMEOUT_SEC=1800 SWEEP_MOST_AGE="900 days" SWEEP_LEAST_AGE="0 minutes"   SWEEP_CONCURRENCY=64   SWEEP_EXTRA_COND="is_pinned"              $HOME/dagcargo/maint/log_and_run.bash pin_sweep_heavy.log           $HOME/dagcargo/maint/pin_sweep.bash
 * * * * *   SWEEP_TIMEOUT_SEC=3600 SWEEP_MOST_AGE="60 days"  SWEEP_LEAST_AGE="0 minutes"   SWEEP_CONCURRENCY=256  SWEEP_EXTRA_COND="via_psa"                $HOME/dagcargo/maint/log_and_run.bash pin_sweep_psa.log             $HOME/dagcargo/maint/pin_sweep.bash
 
-# deal status overviews
+# various status overviews
 # https://cargo.web3.storage/status/pending_replication.json
+# https://cargo.web3.storage/status/deal_counts.json
 # https://cargo.web3.storage/status/usage-summary/
-3-59/15 * * * * $HOME/dagcargo/maint/export_pending_replication.bash
-3-59/15 * * * * $HOME/dagcargo/maint/export_usage-per-source.bash
+58 */2 * * *  $HOME/dagcargo/maint/log_and_run.bash cron_export-stats.log  $HOME/dagcargo/maint/export_stats.bash
