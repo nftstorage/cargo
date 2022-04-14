@@ -29,7 +29,7 @@ type cargoMetric struct {
 var workerCount = 24
 var onlyHeavy bool
 var metricDbTimeout = 30 * time.Minute
-var heavyMetricDbTimeout = 90 * time.Minute
+var heavyMetricDbTimeout = 75 * time.Minute
 
 var pushMetrics = &cli.Command{
 	Usage:  "Push service metrics to external collectors",
@@ -1142,7 +1142,6 @@ func gatherMetric(cctx *cli.Context, m cargoMetric) ([]prometheus.Collector, err
 	ctx := cctx.Context
 	t0 := time.Now()
 
-	var err error
 	var statTx pgx.Tx
 	defer func() {
 		if statTx != nil {
@@ -1150,28 +1149,37 @@ func gatherMetric(cctx *cli.Context, m cargoMetric) ([]prometheus.Collector, err
 		}
 	}()
 
-	if statConnStr := cctx.String("cargo-pg-stats-connstring"); statConnStr != "" {
-		statDb, connErr := pgx.Connect(ctx, statConnStr)
-		if connErr != nil {
-			return nil, connErr
-		}
-		defer statDb.Close(context.Background()) //nolint:errcheck
-		statTx, err = statDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	} else {
-		statTx, err = cargoDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	}
-	if err != nil {
-		return nil, err
-	}
-
 	var msecTOut int64
 	if onlyHeavy {
 		msecTOut = heavyMetricDbTimeout.Milliseconds()
 	} else {
 		msecTOut = metricDbTimeout.Milliseconds()
 	}
-	if _, err = statTx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, msecTOut)); err != nil {
-		return nil, err
+
+	if statConnStr := cctx.String("cargo-pg-stats-connstring"); statConnStr != "" {
+		statDb, err := pgx.Connect(ctx, statConnStr)
+		if err != nil {
+			return nil, err
+		}
+		defer statDb.Close(context.Background()) //nolint:errcheck
+
+		// separate db - means we can have a connection-wide timeout
+		if _, err = statDb.Exec(ctx, fmt.Sprintf(`SET statement_timeout = %d`, msecTOut)); err != nil {
+			return nil, err
+		}
+		statTx, err = statDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		if statTx, err = cargoDb.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly}); err != nil {
+			return nil, err
+		}
+		// using wider DB - must be tx-local timeout
+		if _, err = statTx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, msecTOut)); err != nil {
+			return nil, err
+		}
 	}
 
 	rows, err := statTx.Query(ctx, m.query)
