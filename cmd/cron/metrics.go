@@ -29,7 +29,7 @@ type cargoMetric struct {
 var workerCount = 24
 var onlyHeavy bool
 var metricDbTimeout = 30 * time.Minute
-var heavyMetricDbTimeout = 75 * time.Minute
+var heavyMetricDbTimeout = 70 * time.Minute
 
 var pushMetrics = &cli.Command{
 	Usage:  "Push service metrics to external collectors",
@@ -205,9 +205,10 @@ var metricsList = []cargoMetric{
 		`,
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_stored_items_oversized",
-		help: "Count of items larger than a 32GiB sector not marked for deletion",
+		heavy: true, // not really heavy but should accompany other metrics that *are*
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_stored_items_oversized",
+		help:  "Count of items larger than a 32GiB sector not marked for deletion",
 		query: fmt.Sprintf(
 			`
 			WITH
@@ -233,9 +234,10 @@ var metricsList = []cargoMetric{
 		),
 	},
 	{
-		kind: cargoMetricGauge,
-		name: "dagcargo_project_stored_items_inactive",
-		help: "Count of items exclusively from inactive sources",
+		heavy: true, // not really heavy but should accompany other metrics that *are*
+		kind:  cargoMetricGauge,
+		name:  "dagcargo_project_stored_items_inactive",
+		help:  "Count of items exclusively from inactive sources",
 		query: `
 			WITH
 				inactive_sources AS (
