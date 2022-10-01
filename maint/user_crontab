@@ -12,7 +12,7 @@ GOLOG_LOG_FMT=json
 */5 * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_get-new-dags-w3s.log.ndjson    $HOME/dagcargo/bin/dagcargo_cron get-new-dags --project 0 --project 1
 */5 * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_get-new-dags-nfts.log.ndjson   $HOME/dagcargo/bin/dagcargo_cron get-new-dags --project 2
 */5 * * * *   $HOME/dagcargo/maint/log_and_run.bash cron_track-deals.log.ndjson         $HOME/dagcargo/bin/dagcargo_cron track-deals
-* * * * *     $HOME/dagcargo/maint/log_and_run.bash cron_analyze-dags.log.ndjson        $HOME/dagcargo/bin/dagcargo_cron analyze-dags --prepinned-only
+* * * * *     $HOME/dagcargo/maint/log_and_run.bash cron_analyze-dags.log.ndjson        $HOME/dagcargo/bin/dagcargo_cron analyze-dags
 44 * * * *    $HOME/dagcargo/maint/log_and_run.bash cron_aggregate-dags.log.ndjson      $HOME/dagcargo/bin/dagcargo_cron aggregate-dags --skip-pinning --unpin-sources --export-dir ~/CAR_DATA
 * * * * *     $HOME/dagcargo/maint/log_and_run.bash cron_push-metrics.log.ndjson        $HOME/dagcargo/bin/dagcargo_cron push-metrics
 */10 * * * *  $HOME/dagcargo/maint/log_and_run.bash cron_push-metrics-heavy.log.ndjson  $HOME/dagcargo/bin/dagcargo_cron --cargo-pg-stats-connstring=service=cargo-metrics-heavy push-heavy-metrics

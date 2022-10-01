@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/signal"
-	"regexp"
 	"sync/atomic"
 	"time"
 
@@ -30,18 +28,9 @@ type stats struct {
 }
 
 var analyzeDags = &cli.Command{
-	Usage: "Analyze DAGs after pinning them locally",
+	Usage: "Analyze DAGs pinned locally",
 	Name:  "analyze-dags",
 	Flags: []cli.Flag{
-		&cli.UintFlag{
-			Name:  "skip-dags-aged-hours",
-			Usage: "If a dag is not pinned and older than that many hours - do not wait for a pin in-process",
-			Value: 2,
-		},
-		&cli.BoolFlag{
-			Name:  "prepinned-only",
-			Usage: "Rely on the out-of-band sweepers to pin all content, focusing on analyzis only",
-		},
 		&cli.BoolFlag{
 			Name:  "unpin-after-analysis",
 			Usage: "Remove ipfs daemon pin after successfully persisting dag stats",
@@ -71,30 +60,10 @@ var analyzeDags = &cli.Command{
 			cctx.Context,
 			`
 			SELECT
-					cid_v1,
-					( entry_last_updated < ( NOW() - $1::INTERVAL ) ) AS dag_too_old,
-					EXISTS (
-						SELECT 42
-							FROM cargo.dag_sources ds
-							JOIN cargo.sources s USING ( srcid )
-						WHERE
-							d.cid_v1 = ds.cid_v1
-								AND
-							ds.entry_removed IS NULL
-								AND
-							( s.weight IS NULL OR s.weight >= 0 )
-					) AS src_is_active
+					cid_v1
 				FROM cargo.dags d
 			WHERE size_actual IS NULL
-			ORDER BY
-				(
-					SELECT MAX( COALESCE( s.weight, 100 ))
-						FROM cargo.dag_sources ds JOIN cargo.sources s USING ( srcid )
-					WHERE d.cid_v1 = ds.cid_v1
-				) DESC,
-				entry_created DESC -- ensure newest arrivals are attempted first
 			`,
-			fmt.Sprintf("%d hours", cctx.Uint("skip-dags-aged-hours")),
 		)
 		if err != nil {
 			return err
@@ -102,13 +71,10 @@ var analyzeDags = &cli.Command{
 
 		pinsSeen := cid.NewSet()
 		dagsToProcess := make([]cid.Cid, 0, 128<<10)
-		dagsToDownloadAndProcess := make([]cid.Cid, 0, 64<<10)
 
-		var alreadyKnownCount int64
 		var cidStr string
-		var dagTooOld, srcIsActive bool
 		for rows.Next() {
-			if err = rows.Scan(&cidStr, &dagTooOld, &srcIsActive); err != nil {
+			if err = rows.Scan(&cidStr); err != nil {
 				return err
 			}
 			var c cid.Cid
@@ -123,18 +89,8 @@ var analyzeDags = &cli.Command{
 
 			if _, alreadyPinned := systemPins[c]; alreadyPinned {
 				// we already have it ( a sweeper picked it up )
-				// goes straight to the process queue, regardless of status/age
-				alreadyKnownCount++
 				dagsToProcess = append(dagsToProcess, c)
-			} else if dagTooOld {
-				// sorry, old yeller
-				continue
-			} else if srcIsActive && !cctx.Bool("prepinned-only") {
-				// we are instructed to try to download it right away
-				// goes to the queue right after the "already present"
-				dagsToDownloadAndProcess = append(dagsToDownloadAndProcess, c)
 			}
-			// everything else can wait until the sweeper picks it up OR the source (re)activates
 		}
 		if err = rows.Err(); err != nil {
 			return err
@@ -151,7 +107,6 @@ var analyzeDags = &cli.Command{
 		defer func() {
 			log.Infow("summary",
 				"totalSystemPins", len(systemPins),
-				"prepinnedBySweeper", alreadyKnownCount,
 				"analyzed", atomic.LoadUint64(total.analyzed),
 				"unpinned", atomic.LoadUint64(total.unpinned),
 				"failed", atomic.LoadUint64(total.failed),
@@ -160,13 +115,9 @@ var analyzeDags = &cli.Command{
 			)
 		}()
 
-		todoCount := uint64(len(dagsToDownloadAndProcess) + len(dagsToProcess))
+		todoCount := uint64(len(dagsToProcess))
 		toAnalyzeCh := make(chan cid.Cid, todoCount)
-		// process in order - first what we already have, then everything else
 		for _, c := range dagsToProcess {
-			toAnalyzeCh <- c
-		}
-		for _, c := range dagsToDownloadAndProcess {
 			toAnalyzeCh <- c
 		}
 		close(toAnalyzeCh)
@@ -195,7 +146,7 @@ var analyzeDags = &cli.Command{
 						if !chanOpen {
 							return nil
 						}
-						err := pinAndAnalyze(cctx, c, total, state)
+						err := analyzeDAG(cctx, c, total, state)
 						if err != nil {
 							return err
 						}
@@ -273,9 +224,7 @@ type refEntry struct {
 	Err string
 }
 
-var ipfsShutdownErrorRegex = regexp.MustCompile(`promise channel was closed$`)
-
-func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState *atomic.Value) (err error) {
+func analyzeDAG(cctx *cli.Context, rootCid cid.Cid, total stats, currentState *atomic.Value) (err error) {
 
 	ctx, ctxCloser := context.WithCancel(cctx.Context)
 	defer ctxCloser()
@@ -289,26 +238,6 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 		currentState.Store("idle")
 	}()
 
-	if !cctx.Bool("prepinned-only") {
-		currentState.Store("API /pin/add " + rootCid.String())
-		if err = api.Request("pin/add").Arguments(rootCid.String()).Exec(ctx, nil); err != nil {
-			// If we fail to even pin: move on without an error ( we didn't write anything to the DB yet )
-			atomic.AddUint64(total.failed, 1)
-			msg := fmt.Sprintf("failure to pin %s: %s", rootCid, err)
-
-			if ipfsShutdownErrorRegex.MatchString(msg) {
-				log.Debug(msg)
-			} else if ue, castOk := err.(*url.Error); castOk && ue.Timeout() {
-				log.Debug(msg)
-			} else {
-				log.Error(msg)
-			}
-
-			return nil
-		}
-	}
-
-	// We got that far: means we have the pin
 	// Allow for obscenely long stat/refs times
 	/*
 		( this is not even hypothetical, timing below with *hot* caches 😿 )
@@ -320,8 +249,13 @@ func pinAndAnalyze(cctx *cli.Context, rootCid cid.Cid, total stats, currentState
 			user    0m18.150s
 			sys     0m0.434s
 
+		~$ /usr/bin/time ipfs dag stat --progress=false bafybeif2ypmtj2rterplf6apd4wqzceexzptr7jl4fk6hkkmh7tnompsaq
+				Size: 1077011699504, NumBlocks: 4131247
+			20.54user 1.02system 3:22:22elapsed 0%CPU (0avgtext+0avgdata 72912maxresident)k
+			768inputs+0outputs (9major+12653minor)pagefaults 0swaps
+
 	*/
-	api.SetTimeout(3 * time.Hour)
+	api.SetTimeout(6 * time.Hour)
 
 	workerCount := 2
 	retCh := make(chan error, workerCount) // this effectively doubles as a sync.WaitGroup
