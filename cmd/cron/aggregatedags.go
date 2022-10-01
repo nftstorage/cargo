@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,7 +42,8 @@ import (
 
 const (
 	defaultAggregateSettleDelayHours = 1
-	targetMaxSize                    = uint64(34_000_000_000) // bytes of payload *before* .car overhead
+	estimatedSingleBlockCarOverhead  = 3 + 38 + 1             // > 16k car-frame + blake2b cid v1 + off-by-one
+	targetMaxSize                    = uint64(34_000_000_000) // tatget bytes of payload including approximated car overhead *excluding* aggregation overhead
 	aggregateType                    = "DagAggregate UnixFS"
 
 	unixReadable = os.FileMode(0644)
@@ -66,6 +68,7 @@ type aggregateResult struct {
 	carRoot           cid.Cid
 	carCommp          cid.Cid
 	carSha256         []byte
+	carMd5            []byte
 }
 
 type runningTotals struct {
@@ -75,6 +78,7 @@ type runningTotals struct {
 }
 
 type bidBotRequest struct {
+	Md5Hex                          string           `json:"-"`
 	AggregateCid                    string           `json:"payloadCid"`
 	PieceCid                        string           `json:"pieceCid"`
 	PaddedPieceSize                 int64            `json:"pieceSize"`
@@ -170,7 +174,7 @@ var aggregateDags = &cli.Command{
 
 		var standaloneCandidateBytes uint64
 		for _, pending := range toAggRemaining {
-			standaloneCandidateBytes += pending.aggentry.UniqueBlockCumulativeSize
+			standaloneCandidateBytes += pending.aggentry.UniqueBlockCumulativeSize + pending.aggentry.UniqueBlockCount*estimatedSingleBlockCarOverhead
 		}
 		standaloneCandidateCount := len(toAggRemaining)
 		log.Infof("%s standalone aggregation candidates found, projected to weigh %s bytes",
@@ -206,9 +210,12 @@ var aggregateDags = &cli.Command{
 			lastRoundAgg = make([]dagaggregator.AggregateDagEntry, 0, len(toAggRemaining))
 
 			// run forward through the ordered list, until we overflow
-			for len(toAggRemaining) > 0 && runBytes+toAggRemaining[0].aggentry.UniqueBlockCumulativeSize <= targetMaxSize {
+			for len(toAggRemaining) > 0 &&
+				runBytes+
+					toAggRemaining[0].aggentry.UniqueBlockCumulativeSize+
+					toAggRemaining[0].aggentry.UniqueBlockCount*estimatedSingleBlockCarOverhead <= targetMaxSize {
 				d := toAggRemaining[0]
-				runBytes += d.aggentry.UniqueBlockCumulativeSize
+				runBytes += d.aggentry.UniqueBlockCumulativeSize + d.aggentry.UniqueBlockCount*estimatedSingleBlockCarOverhead
 				curRoundSources[d.srcid] = struct{}{}
 				lastRoundAgg = append(lastRoundAgg, d.aggentry)
 				toAggRemaining = toAggRemaining[1:]
@@ -219,11 +226,13 @@ var aggregateDags = &cli.Command{
 				for i := len(toAggRemaining) - 1; runBytes < targetMinSizeSoft && i >= 0; i-- {
 					d := toAggRemaining[i]
 
-					if runBytes+d.aggentry.UniqueBlockCumulativeSize > targetMaxSize || extraSkipFunc(i) {
+					if runBytes+
+						d.aggentry.UniqueBlockCumulativeSize+
+						d.aggentry.UniqueBlockCount*estimatedSingleBlockCarOverhead > targetMaxSize || extraSkipFunc(i) {
 						continue
 					}
 
-					runBytes += d.aggentry.UniqueBlockCumulativeSize
+					runBytes += d.aggentry.UniqueBlockCumulativeSize + d.aggentry.UniqueBlockCount*estimatedSingleBlockCarOverhead
 					lastRoundAgg = append(lastRoundAgg, d.aggentry)
 					toAggRemaining = toAggRemaining[:i+copy(toAggRemaining[i:], toAggRemaining[i+1:])]
 				}
@@ -263,10 +272,10 @@ var aggregateDags = &cli.Command{
 		if len(lastRoundAgg) > 0 {
 			// if we had some leftovers, model them as a "virtual undersized car"
 			// they might get merged somewhere too
-			// ( a bit icky since we do not know the correc size yet, but meh... )
+			// ( a bit icky since we do not know the correct size yet, but meh... )
 			var pseudoCarSize uint64
 			for i := range lastRoundAgg {
-				pseudoCarSize += lastRoundAgg[i].UniqueBlockCumulativeSize
+				pseudoCarSize += lastRoundAgg[i].UniqueBlockCumulativeSize + lastRoundAgg[i].UniqueBlockCount*estimatedSingleBlockCarOverhead
 			}
 			undersizedInvalidCars = append(undersizedInvalidCars, aggregateResult{
 				standaloneEntries: lastRoundAgg,
@@ -441,7 +450,9 @@ var aggregateDags = &cli.Command{
 			}
 
 			// will overflow, nope
-			if runBytes+ae.UniqueBlockCumulativeSize > targetMaxSize {
+			if runBytes+
+				ae.UniqueBlockCumulativeSize+
+				ae.UniqueBlockCount*estimatedSingleBlockCarOverhead > targetMaxSize {
 				continue
 			}
 
@@ -452,7 +463,7 @@ var aggregateDags = &cli.Command{
 
 			// good, let's try it!
 			finalDitchAgg = append(finalDitchAgg, ae)
-			runBytes += ae.UniqueBlockCumulativeSize
+			runBytes += ae.UniqueBlockCumulativeSize + ae.UniqueBlockCount*estimatedSingleBlockCarOverhead
 		}
 		if err := rows.Err(); err != nil {
 			return err
@@ -494,7 +505,7 @@ func aggregationCandidates(ctx context.Context) ([]pendingDag, bool, int, error)
 	}
 	defer rotx.Rollback(context.Background()) //nolint:errcheck
 
-	_, err = rotx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (2*time.Hour).Milliseconds()))
+	_, err = rotx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (6*time.Hour).Milliseconds()))
 	if err != nil {
 		return nil, false, 0, err
 	}
@@ -579,8 +590,6 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 					-- no inactive sources
 					( s.weight >= 0 OR s.weight IS NULL )
 						AND
-					ds.entry_removed IS NULL
-						AND
 					-- not yet aggregated
 					ae.cid_v1 IS NULL
 
@@ -628,45 +637,6 @@ func eligibleForAggregationSQL(targetMaxSize uint64, settleDelayHours uint) stri
 						)
 					)
 			)
-
-		-- exclude dags that are included in other dags already marked above
-		EXCEPT
-
-			SELECT
-					ds.srcid,
-					ds.cid_v1,
-					d.size_actual,
-					d.entry_analyzed,
-					ds.entry_created,
-					s.project,
-					s.weight
-				FROM cargo.dag_sources ds
-				JOIN cargo.dags d USING ( cid_v1 )
-				JOIN cargo.sources s USING ( srcid )
-				JOIN cargo.refs r
-					ON ds.cid_v1 = r.ref_cid
-				JOIN cargo.dag_sources pds
-					ON r.cid_v1 = pds.cid_v1
-				JOIN cargo.dags pd
-					ON pds.cid_v1 = pd.cid_v1
-				JOIN cargo.sources ps
-				ON pds.srcid = ps.srcid
-				-- not yet aggregated anti-joins (IS NULL below)
-				LEFT JOIN cargo.aggregate_entries ae ON
-					ds.cid_v1 = ae.cid_v1
-				LEFT JOIN cargo.aggregate_entries pae ON
-					pds.cid_v1 = pae.cid_v1
-			WHERE
-				-- neither us nor parent yet aggregated
-				( ae.cid_v1 IS NULL AND pae.cid_v1 IS NULL )
-					AND
-				-- no inactive sources
-				( s.weight >= 0 OR s.weight IS NULL )
-					AND
-				-- no inactive parents
-				( ps.weight >= 0 OR ps.weight IS NULL )
-					AND
-				pds.entry_removed IS NULL
 		`,
 		targetMaxSize,
 		fmt.Sprintf("%d hours", settleDelayHours),
@@ -695,6 +665,14 @@ func reifyAggregateCars(cctx *cli.Context, stats runningTotals, timeboxingActive
 
 	// we know how much work there is, just prepare it
 	todoCh := make(chan []dagaggregator.AggregateDagEntry, len(aggBundles))
+	sort.Slice(aggBundles, func(i, j int) bool {
+		switch {
+		case len(aggBundles[i]) != len(aggBundles[j]):
+			return len(aggBundles[j]) < len(aggBundles[i])
+		default:
+			return aggBundles[i][0].RootCid.String() < aggBundles[j][0].RootCid.String()
+		}
+	})
 	for _, b := range aggBundles {
 		todoCh <- b
 	}
@@ -765,51 +743,64 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	var projectedSize int64
 	initialRoots := make([]string, len(toAgg))
 	for i := range toAgg {
-		projectedSize += int64(toAgg[i].UniqueBlockCumulativeSize)
+		projectedSize += int64(toAgg[i].UniqueBlockCumulativeSize + toAgg[i].UniqueBlockCount*estimatedSingleBlockCarOverhead)
 		res.standaloneEntries[i] = toAgg[i]
 		initialRoots[i] = toAgg[i].RootCid.String()
 	}
 
 	// Add all the "free" parts that happen to be included via larger dags
 	log.Infof("determining included-dags for aggregate formed from %d initial roots", len(initialRoots))
-	rows, err := cargoDb.Query(
-		ctx,
-		`
-		SELECT
-				d.cid_v1,
-				d.size_actual,
-				( SELECT 1+COUNT(*) FROM cargo.refs sr WHERE sr.cid_v1 = d.cid_v1 ) AS node_count
-			FROM cargo.refs r, cargo.dags d
-		WHERE
-			r.cid_v1 = ANY( $1::TEXT[] )
-				AND
-			r.ref_cid = d.cid_v1
-				AND
-			d.size_actual > 0
-		`,
-		initialRoots,
-	)
+	err := cargoDb.BeginTxFunc(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(rotx pgx.Tx) error {
+
+		_, err := rotx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (2*time.Hour).Milliseconds()))
+		if err != nil {
+			return err
+		}
+
+		rows, err := rotx.Query(
+			ctx,
+			`
+			SELECT
+					d.cid_v1,
+					d.size_actual,
+					( SELECT 1+COUNT(*) FROM cargo.refs sr WHERE sr.cid_v1 = d.cid_v1 ) AS node_count
+				FROM cargo.refs r, cargo.dags d
+			WHERE
+				r.cid_v1 = ANY( $1::TEXT[] )
+					AND
+				r.ref_cid = d.cid_v1
+					AND
+				d.size_actual > 0
+			`,
+			initialRoots,
+		)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var extraAgg dagaggregator.AggregateDagEntry
+			var cidStr string
+			if err = rows.Scan(&cidStr, &extraAgg.UniqueBlockCumulativeSize, &extraAgg.UniqueBlockCount); err != nil {
+				return err
+			}
+			extraAgg.RootCid, err = cid.Parse(cidStr)
+			if err != nil {
+				return err
+			}
+			toAgg = append(toAgg, extraAgg)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows.Close()
+
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var extraAgg dagaggregator.AggregateDagEntry
-		var cidStr string
-		if err = rows.Scan(&cidStr, &extraAgg.UniqueBlockCumulativeSize, &extraAgg.UniqueBlockCount); err != nil {
-			return nil, err
-		}
-		extraAgg.RootCid, err = cid.Parse(cidStr)
-		if err != nil {
-			return nil, err
-		}
-		toAgg = append(toAgg, extraAgg)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	rows.Close()
 
 	ramBs := new(rambs.RamBs)
 	ramDs := merkledag.NewDAGService(blockservice.New(ramBs, exchangeoffline.Exchange(ramBs)))
@@ -839,7 +830,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 
 	//
 	projectedSize += countBytes
-	log.Infof("%s: writing out projected %s bytes as car export, calculating commP and sha256",
+	log.Infof("%s: writing out projected %s bytes as car export, calculating commP and other hashes",
 		aggLabel,
 		humanize.Comma(projectedSize),
 	)
@@ -860,7 +851,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 	errCh := make(chan error, 1+1+2)           // exporter has defers
 
 	api := ipfsAPI(cctx)
-	api.SetTimeout(2*time.Hour - 5*time.Minute) // yes, obscene, but plausible
+	api.SetTimeout(16 * time.Hour) // yes, obscene, but plausible: bafybeifg2u5gedbeo2fio24fpy7sozsxyppdo4h2tvdvvax2p3nxmb6hpu took 14h :cryingbear:
 
 	var toUnpinOnError string
 	if !cctx.Bool("skip-pinning") {
@@ -935,8 +926,9 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 
 			cp := new(commp.Calc)
 			sha := sha256simd.New()
+			md5 := md5.New()
 			sz, err := io.CopyBuffer(
-				io.MultiWriter(carTmpFile, cp, sha),
+				io.MultiWriter(carTmpFile, cp, sha, md5),
 				apiresp.Output,
 				make([]byte, 32<<20),
 			)
@@ -946,6 +938,7 @@ func aggregateAndAnalyze(cctx *cli.Context, outDir string, toAgg []dagaggregator
 			res.carSize = uint64(sz)
 
 			res.carSha256 = sha.Sum(make([]byte, 0, 32))
+			res.carMd5 = md5.Sum(make([]byte, 0, 20))
 
 			rawCommp, paddedSize, err := cp.Digest()
 			if err != nil {
@@ -988,7 +981,6 @@ watchdog:
 		}
 	}
 
-	// wg.Wait()
 	for workerCount > 0 {
 		<-doneCh
 		workerCount--
@@ -1022,7 +1014,9 @@ watchdog:
 
 	type aggregateMetadata struct {
 		dagaggregator.ManifestPreamble
-		Timeboxed bool `json:",omitempty"`
+		Timeboxed bool   `json:"timeboxed,omitempty"`
+		Sha256sum string `json:"sha256hex"`
+		Md5sum    string `json:"md5hex"`
 	}
 
 	aggMeta, err := json.Marshal(aggregateMetadata{
@@ -1031,6 +1025,8 @@ watchdog:
 			Version:    dagaggregator.CurrentManifestPreamble.Version,
 		},
 		Timeboxed: isTimeboxed,
+		Sha256sum: fmt.Sprintf("%x", res.carSha256),
+		Md5sum:    fmt.Sprintf("%x", res.carMd5),
 	})
 	if err != nil {
 		return nil, err
@@ -1058,13 +1054,12 @@ watchdog:
 	if _, err = tx.Exec(
 		ctx,
 		`
-		INSERT INTO cargo.aggregates ( "aggregate_cid", "piece_cid", "sha256hex", "export_size", "metadata" )
-			VALUES ( $1, $2, $3, $4, $5 )
+		INSERT INTO cargo.aggregates ( "aggregate_cid", "piece_cid", "export_size", "metadata" )
+			VALUES ( $1, $2, $3, $4 )
 		ON CONFLICT DO NOTHING
 		`,
 		root,
 		res.carCommp.String(),
-		fmt.Sprintf("%x", res.carSha256),
 		res.carSize,
 		aggMeta,
 	); err != nil {
@@ -1100,7 +1095,7 @@ watchdog:
 	tx = nil
 
 	// all done: reify file
-	fn := fmt.Sprintf("%s/%s_%s.car", outDir, root, res.carCommp.String())
+	fn := fmt.Sprintf("%s/%x_%s.car", outDir, res.carMd5, res.carCommp.String())
 	err = tmpfile.Link(carTmpFile, fn) // likelihood of failure here is nonexistent
 	if err != nil {
 		return nil, err
@@ -1145,6 +1140,7 @@ watchdog:
 	// The request is opportunistic, only log its errors, do not fail
 	if err := notifyBidBot(cctx, bidBotRequest{
 		AggregateCid:    root,
+		Md5Hex:          fmt.Sprintf("%x", res.carMd5),
 		PieceCid:        res.carCommp.String(),
 		PaddedPieceSize: int64(res.carPieceSize),
 	}); err != nil {

@@ -553,31 +553,31 @@ var metricsList = []cargoMetric{
 				r.ref_cid IS NULL
 		`,
 	},
-	{
-		heavy: true, // FIXME - use some sort of rollup... too heavy even for heavy
-		kind:  cargoMetricCounter,
-		name:  "dagcargo_handled_total_blocks",
-		help:  "How many unique-by-cid blocks did the service handle since inception",
-		query: `
-			SELECT
-				(
-					SELECT COUNT(*) FROM (
-						SELECT DISTINCT( ref_cid ) FROM cargo.refs
-					) d
-				)
-					+
-				(
-					SELECT COUNT(*)
-						FROM cargo.dags d
-						LEFT JOIN cargo.refs r
-							ON d.cid_v1 = r.ref_cid
-					WHERE
-						d.size_actual IS NOT NULL
-							AND
-						r.ref_cid IS NULL
-				)
-		`,
-	},
+	// {
+	// 	heavy: true, // FIXME - use some sort of rollup... too heavy even for heavy
+	// 	kind:  cargoMetricCounter,
+	// 	name:  "dagcargo_handled_total_blocks",
+	// 	help:  "How many unique-by-cid blocks did the service handle since inception",
+	// 	query: `
+	// 		SELECT
+	// 			(
+	// 				SELECT COUNT(*) FROM (
+	// 					SELECT DISTINCT( ref_cid ) FROM cargo.refs
+	// 				) d
+	// 			)
+	// 				+
+	// 			(
+	// 				SELECT COUNT(*)
+	// 					FROM cargo.dags d
+	// 					LEFT JOIN cargo.refs r
+	// 						ON d.cid_v1 = r.ref_cid
+	// 				WHERE
+	// 					d.size_actual IS NOT NULL
+	// 						AND
+	// 					r.ref_cid IS NULL
+	// 			)
+	// 	`,
+	// },
 
 	//
 	// deal-related metrics
@@ -598,7 +598,7 @@ var metricsList = []cargoMetric{
 			SELECT COUNT(*)
 				FROM cargo.aggregates
 			WHERE
-				(metadata->'Timeboxed')::BOOLEAN
+				(metadata->'timeboxed')::BOOLEAN
 		`,
 	},
 	{

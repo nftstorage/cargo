@@ -4,7 +4,7 @@ CREATE OR REPLACE
   FUNCTION cargo.valid_cid_v1(TEXT) RETURNS BOOLEAN
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
 AS $$
-  SELECT SUBSTRING( $1 FROM 1 FOR 3 ) = 'baf'
+  SELECT SUBSTRING( $1 FROM 1 FOR 2 ) = 'ba'
 $$;
 
 CREATE OR REPLACE
@@ -106,7 +106,6 @@ CREATE INDEX IF NOT EXISTS dag_sources_entry_created ON cargo.dag_sources ( entr
 CREATE TABLE IF NOT EXISTS cargo.aggregates (
   aggregate_cid TEXT NOT NULL UNIQUE CONSTRAINT valid_aggregate_cid CHECK ( cargo.valid_cid_v1(aggregate_cid) ),
   piece_cid TEXT UNIQUE NOT NULL,
-  sha256hex TEXT NOT NULL,
   export_size BIGINT NOT NULL CONSTRAINT valid_export_size CHECK ( export_size > 0 ),
   metadata JSONB,
   entry_created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
@@ -215,7 +214,7 @@ CREATE TABLE IF NOT EXISTS cargo.metrics_log (
   value BIGINT,
   collected_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
-
+CREATE INDEX IF NOT EXISTS metrics_log_collected_name_dim ON cargo.metrics_log ( collected_at, name );
 
 CREATE OR REPLACE VIEW cargo.aggregate_summary AS (
   WITH
@@ -248,7 +247,7 @@ CREATE OR REPLACE VIEW cargo.aggregate_summary AS (
     a.piece_cid,
     a.export_size AS car_size,
     a.entry_created AS aggregated_at,
-    'https://cargo.web3.storage/deal-cars/'||aggregate_cid||'_'||piece_cid||'.car' AS web2_source,
+    'https://app-cargo.fil.riba.cloud/deal-cars/' || (metadata->>'md5hex') || '_' || piece_cid || '.car' AS http_source,
     ( SELECT COUNT(*) FROM cargo.deals d WHERE a.aggregate_cid = d.aggregate_cid AND d.status != 'terminated' ) AS tentative_replicas,
     (
       SELECT JSONB_OBJECT_AGG( k,v ) FROM (
@@ -297,6 +296,7 @@ CREATE OR REPLACE VIEW cargo.dags_missing_list AS (
     FROM (
       SELECT
           ds.cid_v1,
+          details->>'original_cid' AS cid_original,
           ds.source_key,
           ds.srcid,
           ds.entry_created,

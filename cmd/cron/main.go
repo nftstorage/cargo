@@ -197,7 +197,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			log.Error(err)
+			log.Errorf("%+v", err)
 			if currentCmdLock != nil || currentCmd == "get-new-dags" {
 				emitEndLogs(false)
 			}
