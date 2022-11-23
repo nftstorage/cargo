@@ -342,7 +342,7 @@ func analyzeDAG(cctx *cli.Context, rootCid cid.Cid, total stats, currentState *a
 		}
 	}
 	if workerError != nil {
-		return workerError
+		return xerrors.Errorf("failure analyzing %s: %w", rootCid.String(), workerError)
 	}
 
 	currentState.Store(fmt.Sprintf("DbWrite size(%s) + refs(%s) %s", humanize.Comma(int64(ds.Size)), humanize.Comma(int64(len(refs))), rootCid.String()))

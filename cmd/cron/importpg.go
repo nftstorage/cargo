@@ -9,9 +9,12 @@ import (
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/xerrors"
 )
 
 const (
+	dagQueryTimeout = time.Duration(3 * time.Hour)
+
 	nftsUploadAuthkeyFkColumn = `key_id`
 	nftsDetailsUpload         = `
 		JSONB_STRIP_NULLS( JSONB_BUILD_OBJECT(
@@ -69,13 +72,13 @@ const (
 				ds.inserted_at AS entry_created,
 				ds.deleted_at AS entry_removed,
 				GREATEST(
-					ds.updated_at,
-					(
-						SELECT MAX(p.updated_at)
-							FROM pin p
-						WHERE
-							p.content_cid = d.cid
-					)
+					ds.updated_at
+					-- (
+					-- 	SELECT MAX(p.updated_at)
+					-- 		FROM pin p
+					-- 	WHERE
+					-- 		p.content_cid = d.cid
+					-- )
 				) AS entry_last_updated,
 				JSONB_STRIP_NULLS( JSONB_BUILD_OBJECT(
 					'original_cid', ds.source_cid,
@@ -101,21 +104,14 @@ const (
 			JOIN auth_key k ON ds.auth_key_id = k.id
 		WHERE
 			ds.updated_at > $1
-				OR
-			EXISTS (
-				SELECT 42
-					FROM pin
-				WHERE
-					pin.content_cid = d.cid
-						AND
-					pin.updated_at > $1
-			)
+--				OR
+--			d.cid IN ( SELECT cid FROM cids_with_pin_updates )
 	)`
 
 	nftsDetailsUser = `
 		JSONB_STRIP_NULLS( JSONB_BUILD_OBJECT(
 			'public_address', s.public_address, -- FIXME should go away, same as magic_link_id
-			'github_id', COALESCE( s.github->>'userHandle', SUBSTRING( s.github_id, 'github\|([0-9]+)') )::BIGINT,
+			'github_id', NULLIF( COALESCE( s.github->>'userHandle', SUBSTRING( s.github_id, 'github\|([0-9]+)') ), '' )::BIGINT,
 			'email', s.email,
 			'magic_link_id', CASE WHEN s.magic_link_id = '' THEN NULL ELSE s.magic_link_id END,
 			'name', CASE WHEN s.name = '' THEN NULL ELSE s.name END,
@@ -126,7 +122,7 @@ const (
 	w3sDetailsUser = `
 		JSONB_STRIP_NULLS( JSONB_BUILD_OBJECT(
 			'public_address', s.public_address, -- FIXME should go away, same as magic_link_id
-			'github_id', s.github::BIGINT,
+			'github_id', NULLIF( s.github, '' )::BIGINT,
 			'email', s.email,
 			'magic_link_id', CASE WHEN s.issuer = '' THEN NULL ELSE s.issuer END,
 			'name', CASE WHEN s.name = '' THEN NULL ELSE s.name END,
@@ -210,7 +206,7 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 	}
 	defer srcTx.Rollback(context.Background()) //nolint:errcheck
 
-	_, err = srcTx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (2*time.Hour).Milliseconds()))
+	_, err = srcTx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, dagQueryTimeout.Milliseconds()))
 	if err != nil {
 		return err
 	}
@@ -220,6 +216,10 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 		ctx,
 		fmt.Sprintf(
 			`
+			-- WITH
+			-- 	cids_with_pin_updates AS (
+			-- 		SELECT DISTINCT(pin.content_cid) FROM pin WHERE pin.updated_at > $1
+			--	)
 			(
 				SELECT
 						ds.user_id::TEXT AS source_label,
@@ -229,13 +229,13 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 						ds.inserted_at AS entry_created,
 						ds.deleted_at AS entry_removed,
 						GREATEST(
-							ds.updated_at,
-							(
-								SELECT MAX(p.updated_at)
-									FROM pin p
-								WHERE
-									p.content_cid = d.cid
-							)
+							ds.updated_at
+							-- (
+							-- 	SELECT MAX(p.updated_at)
+							-- 		FROM pin p
+							-- 	WHERE
+							-- 		p.content_cid = d.cid
+							-- )
 						) AS entry_last_updated,
 						%s AS details
 					FROM upload ds
@@ -243,15 +243,8 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 					LEFT JOIN auth_key k ON ds.%s = k.id
 				WHERE
 					ds.updated_at > $1
-						OR
-					EXISTS (
-						SELECT 42
-							FROM pin
-						WHERE
-							pin.content_cid = d.cid
-								AND
-							pin.updated_at > $1
-					)
+--						OR
+--					d.cid IN ( SELECT cid FROM cids_with_pin_updates )
 			)
 			%s
 			`,
@@ -262,14 +255,15 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 		cutoff,
 	)
 	if err != nil {
-		return err
+		return xerrors.Errorf("Pg error: %w", err)
 	}
 	defer dagRows.Close()
 
+	earliestDagUpdate := time.Now()
 	for dagRows.Next() {
 		var e dagSourceEntry
 		if err = dagRows.Scan(&e.sourceLabel, &e.CidV1Str, &e.SourceKey, &e.SizeClaimed, &e.CreatedAt, &e.RemovedAt, &e.UpdatedAt, &e.Details); err != nil {
-			return err
+			return xerrors.Errorf("Pg error: %w", err)
 		}
 
 		c, err := cid.Parse(e.CidV1Str)
@@ -285,9 +279,13 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 
 		totalQueriedDags++
 		remoteDags[[2]string{e.sourceLabel, e.SourceKey}] = &e
+
+		if earliestDagUpdate.After(e.UpdatedAt) {
+			earliestDagUpdate = e.UpdatedAt
+		}
 	}
 	if err = dagRows.Err(); err != nil {
-		return err
+		return xerrors.Errorf("Pg error: %w", err)
 	}
 	dagRows.Close()
 
@@ -300,12 +298,16 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 		SELECT s.source_label, ds.source_key, ds.entry_last_updated
 			FROM cargo.dag_sources ds
 			JOIN cargo.sources s USING ( srcid )
-		WHERE s.project = $1
+		WHERE
+			s.project = $1
+				AND
+			ds.entry_last_updated >= $2
 		`,
 		p.id,
+		earliestDagUpdate,
 	)
 	if err != nil {
-		return err
+		return xerrors.Errorf("Pg error: %w", err)
 	}
 	defer dagentryRows.Close()
 	for dagentryRows.Next() {
@@ -315,12 +317,12 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 			return err
 		}
 		existingDags++
-		if r, found := remoteDags[entryKey]; found && ourLastUpd.After(r.UpdatedAt) {
+		if r, found := remoteDags[entryKey]; found && !ourLastUpd.Before(r.UpdatedAt) {
 			delete(remoteDags, entryKey)
 		}
 	}
 	if err = dagentryRows.Err(); err != nil {
-		return err
+		return xerrors.Errorf("Pg error: %w", err)
 	}
 	dagentryRows.Close()
 	log.Infof("%s: iterated through %d already-existing dag entries", projPrefix, existingDags)
@@ -335,7 +337,8 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 			toGetSrcLabels = append(toGetSrcLabels, d.sourceLabel)
 		}
 	}
-	srcRows, err := srcTx.Query(
+
+	srcRows, err := srcDb.Query(
 		ctx,
 		fmt.Sprintf(
 			`
@@ -356,7 +359,7 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 		toGetSrcLabels,
 	)
 	if err != nil {
-		return err
+		return xerrors.Errorf("Pg error: %w", err)
 	}
 	defer srcRows.Close()
 
@@ -388,7 +391,7 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 			s.Details,
 		).Scan(&s.SourceID, &isNewSource)
 		if err != nil {
-			return err
+			return xerrors.Errorf("Pg error: %w", err)
 		}
 		if isNewSource {
 			newSources++
@@ -397,7 +400,7 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 		srcMap[s.SourceLabel] = &s.SourceID
 	}
 	if err = srcRows.Err(); err != nil {
-		return err
+		return xerrors.Errorf("Pg error: %w", err)
 	}
 	srcRows.Close()
 	log.Infof("%s: upserted %d sources (users)", projPrefix, len(srcMap))
@@ -407,6 +410,11 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 	for _, d := range remoteDags {
 
 		d.SourceID = srcMap[d.sourceLabel]
+
+		if d.cidV1.Prefix().Codec == 0 {
+			// log.Warnw("ignore record with invalid cid", "struct", d)
+			continue
+		}
 
 		if _, known := knownDags[d.cidV1]; !known {
 			_, err = cargoDb.Exec(
@@ -419,7 +427,7 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 				d.CreatedAt,
 			)
 			if err != nil {
-				return err
+				return xerrors.Errorf("Pg error: %w", err)
 			}
 		}
 
@@ -466,7 +474,7 @@ func getPgDags(cctx *cli.Context, p pgProject, cutoff time.Time, knownDags, ownA
 			d.Details,
 		).Scan(&isNew, &wasAlreadyRemoved)
 		if err != nil {
-			return err
+			return xerrors.Errorf("Pg error: %w", err)
 		}
 
 		if d.RemovedAt != nil && !wasAlreadyRemoved {
