@@ -83,31 +83,6 @@ var globalFlags = []cli.Flag{
 		Hidden:      true,
 		Destination: &promPass,
 	}),
-	altsrc.NewStringFlag(&cli.StringFlag{
-		Name:        "bidbot-api",
-		DefaultText: "  {{ private, read from config file }}  ",
-		Hidden:      true,
-	}),
-	altsrc.NewStringFlag(&cli.StringFlag{
-		Name:        "bidbot-token",
-		DefaultText: "  {{ private, read from config file }}  ",
-		Hidden:      true,
-	}),
-	altsrc.NewIntFlag(&cli.IntFlag{
-		Name:        "bidbot-replication-factor",
-		DefaultText: "  {{ private, read from config file }}  ",
-		Hidden:      true,
-	}),
-	altsrc.NewIntFlag(&cli.IntFlag{
-		Name:        "bidbot-piece-replication-deadline-days",
-		DefaultText: "  {{ private, read from config file }}  ",
-		Hidden:      true,
-	}),
-	altsrc.NewIntFlag(&cli.IntFlag{
-		Name:        "bidbot-individual-proposal-deadline-hours",
-		DefaultText: "  {{ private, read from config file }}  ",
-		Hidden:      true,
-	}),
 }
 
 var promURL, promUser, promPass string

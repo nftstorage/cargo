@@ -7,12 +7,6 @@ ipfs-api = "http://localhost:5001"
 
 aggregate-location-template = "https://cargo.web3.storage/deal-cars/{{.AggregateCid}}_{{.PieceCid}}.car"
 
-bidbot-api = "..."
-bidbot-token = "..."
-bidbot-replication-factor = 5
-bidbot-piece-replication-deadline-days = 3
-bidbot-individual-proposal-deadline-hours = 24
-
 prometheus_push_url="..."
 prometheus_push_user="..."
 prometheus_push_pass="..."

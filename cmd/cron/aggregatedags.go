@@ -1,20 +1,16 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"text/template"
 	"time"
 
 	"github.com/dustin/go-humanize"
@@ -36,7 +32,6 @@ import (
 	"github.com/multiformats/go-multihash"
 	"github.com/tmthrgd/tmpfile"
 	"github.com/urfave/cli/v2"
-	"golang.org/x/net/context/ctxhttp"
 	"golang.org/x/xerrors"
 )
 
@@ -75,25 +70,6 @@ type runningTotals struct {
 	newAggregatesTotal       *uint64
 	dagsAggregatedStandalone *uint64
 	dagsAggregatedTotal      *uint64
-}
-
-type bidBotRequest struct {
-	Md5Hex                          string           `json:"-"`
-	AggregateCid                    string           `json:"payloadCid"`
-	PieceCid                        string           `json:"pieceCid"`
-	PaddedPieceSize                 int64            `json:"pieceSize"`
-	ReplicationFactor               uint             `json:"repFactor"`
-	ReplicationMaxDeadline          time.Time        `json:"deadline"`
-	IndividualProposalDeadlineHours uint             `json:"maxProposalDeadlineHours"`
-	DataSource                      bidBotDatasource `json:"carURL"`
-}
-type bidBotDatasource struct {
-	URL string `json:"url"`
-}
-type bidBotResponse struct {
-	ID           string
-	AggregateCid cid.Cid `json:"cid"`
-	StatusCode   string  `json:"status_code"`
 }
 
 var aggregateDags = &cli.Command{
@@ -1141,90 +1117,7 @@ watchdog:
 		wg.Wait()
 	}
 
-	// Aggregate ready to go, fire off a bidbot request
-	// The request is opportunistic, only log its errors, do not fail
-	if err := notifyBidBot(cctx, bidBotRequest{
-		AggregateCid:    root,
-		Md5Hex:          fmt.Sprintf("%x", res.carMd5),
-		PieceCid:        res.carCommp.String(),
-		PaddedPieceSize: int64(res.carPieceSize),
-	}); err != nil {
-		log.Errorf("failed to register aggregate with BidBot, proceeding nevertheless: %s", err)
-	}
-
 	return res, nil
-}
-
-var datasourceTemplate *template.Template
-
-func notifyBidBot(cctx *cli.Context, reqData bidBotRequest) error {
-
-	//
-	// FIXME - bidbot is not concurrency-friendly at present, hold a pg-side lock
-	tx, err := cargoDb.Begin(cctx.Context)
-	if err != nil {
-		return xerrors.Errorf("unable to open workaround-lock-transaction: %w", err)
-	}
-	defer tx.Rollback(context.Background()) //nolint:errcheck
-	if _, err = tx.Exec(cctx.Context, `SELECT PG_ADVISORY_XACT_LOCK( 123456 )`); err != nil {
-		return xerrors.Errorf("unable to advisory-lock: %w", err)
-	}
-	// END FIXME
-	//
-
-	if datasourceTemplate == nil {
-		datasourceTemplate, err = template.New("").Parse(cctx.String("aggregate-location-template"))
-		if err != nil {
-			return xerrors.Errorf("unable to parse template '%s': %w", cctx.String("aggregate-location-template"), err)
-		}
-	}
-	datasourceURL := new(bytes.Buffer)
-	if err = datasourceTemplate.Execute(datasourceURL, reqData); err != nil {
-		return err
-	}
-
-	reqData.ReplicationFactor = cctx.Uint("bidbot-replication-factor")
-	reqData.ReplicationMaxDeadline = time.Now().Add(24 * time.Hour * time.Duration(cctx.Uint("bidbot-piece-replication-deadline-days")))
-	reqData.IndividualProposalDeadlineHours = cctx.Uint("bidbot-individual-proposal-deadline-hours")
-	reqData.DataSource = bidBotDatasource{URL: datasourceURL.String()}
-	reqJSON, err := json.Marshal(reqData)
-	if err != nil {
-		return err
-	}
-
-	resp, err := ctxhttp.Post(
-		cctx.Context,
-		retryingClient(cctx.String("bidbot-token")),
-		cctx.String("bidbot-api"),
-		"application/json",
-		bytes.NewReader(reqJSON),
-	)
-	if err != nil {
-		return err
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode >= http.StatusBadRequest {
-		return xerrors.Errorf("request to BidBot failed with code %d\n%s", resp.StatusCode, string(body))
-	}
-
-	var respData bidBotResponse
-	if err = json.Unmarshal(body, &respData); err != nil {
-		return xerrors.Errorf("unable to parse BidBot response: %s\n%s", err, string(body))
-	}
-
-	log.Infow("bidbot registration successful",
-		"bidbotID", respData.ID,
-		"bidbotStatus", respData.StatusCode,
-		"aggregateCid", respData.AggregateCid.String(),
-		"repFactor", reqData.ReplicationFactor,
-		"replicationDeadline", reqData.ReplicationMaxDeadline,
-		"individualProposalDeadlineHours", reqData.IndividualProposalDeadlineHours,
-	)
-
-	return nil
 }
 
 // pulls cids from an AllKeysChan and sends them concurrently via multiple workers to an API
