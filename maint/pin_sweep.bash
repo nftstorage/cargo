@@ -83,7 +83,7 @@ trap 'dunnn' EXIT
 say "Attempting sweep of $pending_count DAGs $rundesc"
 
 [[ -t 1 ]] && show_progress="true" || show_progress="false"
-<<<"$cids_pending" xargs -P $SWEEP_CONCURRENCY -n1 -I{} bash -c "curl -m$(( $SWEEP_TIMEOUT_SEC + 5 )) -sNXPOST '$SWEEP_IPFSAPI/api/v0/pin/add?progress=${show_progress}&timeout=${SWEEP_TIMEOUT_SEC}s&arg={}' | perl -pe '$|++; s/\$/ \$\$/'" \
+<<<"$cids_pending" xargs -P $SWEEP_CONCURRENCY -n1 -I{} bash -c "curl -m$(( $SWEEP_TIMEOUT_SEC + 5 )) -sNXPOST '$SWEEP_IPFSAPI/api/v0/pin/add?progress=${show_progress}&timeout=${SWEEP_TIMEOUT_SEC}s&arg={}' | perl -pe '$|++; s/\$/ \$\$ {}/'" \
  | perl -pe '
    BEGIN { ($|,@anim)=(1,qw(- \ | /)) }
    s/^\{\}.*//s
@@ -92,7 +92,7 @@ say "Attempting sweep of $pending_count DAGs $rundesc"
     or
    s/^\{"Progress"(.*)/ $seen{$1}++ ? "" : "$anim[($ac++)%($#anim+1)]\x08" /se
     or
-   s/^.*"Type":"error".*/"x$anim[($ac++)%($#anim+1)]\x08"/se
+   s/^.*"Type":"error".*?(\w*$).*/"|$1|"/se
     or
    s/^.*/"?$anim[($ac++)%($#anim+1)]\x08"/se
  ' \
