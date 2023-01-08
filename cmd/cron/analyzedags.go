@@ -342,6 +342,9 @@ func analyzeDAG(cctx *cli.Context, rootCid cid.Cid, total stats, currentState *a
 		}
 	}
 	if workerError != nil {
+		// log.Errorf("failure analyzing %s: %s", rootCid.String(), workerError)
+		// return nil
+
 		return xerrors.Errorf("failure analyzing %s: %w", rootCid.String(), workerError)
 	}
 

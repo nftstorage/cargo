@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	dagQueryTimeout = time.Duration(3 * time.Hour)
+	dagQueryTimeout = time.Duration(12 * time.Hour)
 
 	nftsUploadAuthkeyFkColumn = `key_id`
 	nftsDetailsUpload         = `

@@ -389,86 +389,91 @@ var aggregateDags = &cli.Command{
 
 		log.Info("forcing time-boxed rehydration: retrieving list of preexisting already-packaged standalone dags")
 
-		rows, err := cargoDb.Query(
-			ctx,
-			`
-			WITH dag_candidates AS (
-				SELECT
-						ae.cid_v1,
-						d.size_actual
-					FROM cargo.aggregate_entries ae
-					JOIN cargo.dags d USING ( cid_v1 )
-					LEFT JOIN cargo.deals de -- this inflates the replica_count, conflating 0 with 1 ( always 1 ), which is ok
-						ON de.aggregate_cid = ae.aggregate_cid AND de.status != 'terminated'
-				WHERE
-					-- don't go with big dags, don't risk it
-					d.size_actual > 0 AND d.size_actual < $1
-						AND
-					-- do not republish deleted/de-prioritized dags
-					EXISTS (
-						SELECT 42
-							FROM cargo.dag_sources ds
-							JOIN cargo.sources s USING ( srcid )
-						WHERE
-							d.cid_v1 = ds.cid_v1
-								AND
-							ds.entry_removed IS NULL
-								AND
-							( s.weight IS NULL OR s.weight >= 0 )
-					)
-				GROUP BY ( ae.cid_v1, d.size_actual )
-				ORDER BY COUNT(*)
-				LIMIT $2
-			)
-			SELECT
-					d.cid_v1,
-					d.size_actual,
-					( SELECT 1+COUNT(*) FROM cargo.refs sr WHERE sr.cid_v1 = d.cid_v1 ) AS node_count
-				FROM dag_candidates d
-				LEFT JOIN cargo.refs r
-					ON d.cid_v1 = r.ref_cid
-			WHERE r.ref_cid IS NULL -- not part of anything else
-			ORDER BY RANDOM()
-			`,
-			targetMinSizeHard,
-			1_000_000,
-		)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		// run through *everything* attempting to pack things as tightly as possible
-		// ( up to 1 mil records )
-		runBytes := undersizedInvalidCars[0].carSize
 		finalDitchAgg := undersizedInvalidCars[0].standaloneEntries
-		for rows.Next() {
-			var ae dagaggregator.AggregateDagEntry
-			var cidStr string
-			if err = rows.Scan(&cidStr, &ae.UniqueBlockCumulativeSize, &ae.UniqueBlockCount); err != nil {
+		if err := cargoDb.BeginTxFunc(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(rotx pgx.Tx) error {
+			if _, err := rotx.Exec(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, (2*time.Hour).Milliseconds())); err != nil {
 				return err
 			}
 
-			// will overflow, nope
-			if runBytes+
-				ae.UniqueBlockCumulativeSize+
-				ae.UniqueBlockCount*estimatedSingleBlockCarOverhead > targetMaxSize {
-				continue
-			}
-
-			ae.RootCid, err = cid.Parse(cidStr)
+			rows, err := rotx.Query(
+				ctx,
+				`
+				WITH dag_candidates AS (
+					SELECT
+							ae.cid_v1,
+							d.size_actual
+						FROM cargo.aggregate_entries ae
+						JOIN cargo.dags d USING ( cid_v1 )
+						LEFT JOIN cargo.deals de -- this inflates the replica_count, conflating 0 with 1 ( always 1 ), which is ok
+							ON de.aggregate_cid = ae.aggregate_cid AND de.status != 'terminated'
+					WHERE
+						-- don't go with big dags, don't risk it
+						d.size_actual > 0 AND d.size_actual < $1
+							AND
+						-- do not republish deleted/de-prioritized dags
+						EXISTS (
+							SELECT 42
+								FROM cargo.dag_sources ds
+								JOIN cargo.sources s USING ( srcid )
+							WHERE
+								d.cid_v1 = ds.cid_v1
+									AND
+								ds.entry_removed IS NULL
+									AND
+								( s.weight IS NULL OR s.weight >= 0 )
+						)
+					GROUP BY ( ae.cid_v1, d.size_actual )
+					ORDER BY COUNT(*)
+					LIMIT $2
+				)
+				SELECT
+						d.cid_v1,
+						d.size_actual,
+						( SELECT 1+COUNT(*) FROM cargo.refs sr WHERE sr.cid_v1 = d.cid_v1 ) AS node_count
+					FROM dag_candidates d
+					LEFT JOIN cargo.refs r
+						ON d.cid_v1 = r.ref_cid
+				WHERE r.ref_cid IS NULL -- not part of anything else
+				ORDER BY RANDOM()
+				`,
+				targetMinSizeHard,
+				1_000_000,
+			)
 			if err != nil {
 				return err
 			}
+			defer rows.Close()
 
-			// good, let's try it!
-			finalDitchAgg = append(finalDitchAgg, ae)
-			runBytes += ae.UniqueBlockCumulativeSize + ae.UniqueBlockCount*estimatedSingleBlockCarOverhead
-		}
-		if err := rows.Err(); err != nil {
+			// run through *everything* attempting to pack things as tightly as possible
+			// ( up to 1 mil records )
+			runBytes := undersizedInvalidCars[0].carSize
+			for rows.Next() {
+				var ae dagaggregator.AggregateDagEntry
+				var cidStr string
+				if err = rows.Scan(&cidStr, &ae.UniqueBlockCumulativeSize, &ae.UniqueBlockCount); err != nil {
+					return err
+				}
+
+				// will overflow, nope
+				if runBytes+
+					ae.UniqueBlockCumulativeSize+
+					ae.UniqueBlockCount*estimatedSingleBlockCarOverhead > targetMaxSize {
+					continue
+				}
+
+				ae.RootCid, err = cid.Parse(cidStr)
+				if err != nil {
+					return err
+				}
+
+				// good, let's try it!
+				finalDitchAgg = append(finalDitchAgg, ae)
+				runBytes += ae.UniqueBlockCumulativeSize + ae.UniqueBlockCount*estimatedSingleBlockCarOverhead
+			}
+			return rows.Err()
+		}); err != nil {
 			return err
 		}
-		rows.Close()
 
 		// if it works - it works
 		_, err = reifyAggregateCars(cctx, stats, true, [][]dagaggregator.AggregateDagEntry{finalDitchAgg})
